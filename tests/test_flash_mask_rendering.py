@@ -171,6 +171,15 @@ def test_label_mask_preserves_letter_interiors_without_bridging_word_spaces(nest
     assert not path.contains((centers[0] + centers[1]) / 2), "Word spaces must remain unmasked"
 
 
+def test_native_label_capture_preserves_source_and_releases_temporary_children(nested_form):
+    host, manager = nested_form
+    label = manager.labels["alpha"].findChild(QLabel)
+    before = (label.text(), label.font(), label.styleSheet(), label.geometry(), label.children())
+    for _ in range(3):
+        assert not get_child_mask_path(label, host).isEmpty()
+    assert (label.text(), label.font(), label.styleSheet(), label.geometry(), label.children()) == before
+
+
 @pytest.mark.parametrize("fields", [("alpha",), ("alpha", "beta")])
 def test_nested_flash_paint_has_opaque_context_and_complete_clear_holes(nested_form, qapp, fields):
     host, manager = nested_form
