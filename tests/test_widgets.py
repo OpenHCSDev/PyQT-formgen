@@ -2103,10 +2103,12 @@ def test_local_field_edit_preserves_input_and_label_inside_opaque_context(qapp) 
     from PyQt6.QtWidgets import QDialog, QVBoxLayout
 
     from pyqt_reactive.animation.flash_mixin import (
+        LEAF_WIDGET_TYPES,
         WindowFlashOverlay,
+        get_child_mask_path,
+        resolve_mask_widgets,
     )
     from PyQt6.QtGui import QColor
-    from PyQt6.QtCore import QPointF
     from pyqt_reactive.forms.parameter_form_manager import (
         FormManagerConfig,
         ParameterFormManager,
@@ -2151,9 +2153,9 @@ def test_local_field_edit_preserves_input_and_label_inside_opaque_context(qapp) 
         assert records[0].color.alpha() == 255
         path = records[0].path
         assert path is not None
-        for widget in (nested.widgets["alpha"], nested.labels["alpha"]):
-            center = widget.mapTo(host, widget.rect().center())
-            assert not path.contains(QPointF(center))
+        labels = resolve_mask_widgets(nested.labels["alpha"], LEAF_WIDGET_TYPES)
+        for widget in (nested.widgets["alpha"], *labels):
+            assert path.intersected(get_child_mask_path(widget, host)).simplified().isEmpty()
     finally:
         WindowFlashOverlay.cleanup_window(host)
         host.close()

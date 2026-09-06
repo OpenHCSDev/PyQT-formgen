@@ -32,7 +32,6 @@ import logging
 import time
 from dataclasses import dataclass, field, replace
 from functools import partial
-from math import ceil
 from typing import Dict, Iterable, List, Optional, Set, Callable, Any, Tuple, TYPE_CHECKING
 import re
 from objectstate import DottedFieldPath
@@ -40,6 +39,7 @@ from pyqt_reactive.protocols.widget_protocols import FlashMaskRectProvider
 from PyQt6.QtCore import (
     QCoreApplication,
     QObject,
+    QPoint,
     QThread,
     QTimer,
     Qt,
@@ -72,7 +72,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import (
     QColor,
     QBitmap,
-    QImage,
     QPainter,
     QPainterPath,
     QRegion,
@@ -500,6 +499,52 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
     return get_child_mask_path(widget, window).boundingRect().toAlignedRect()
 
 
+class NativeLabelCoverageSurface(QWidget):
+    """Rasterize label coverage on a native widget paint target.
+
+    Qt's QRasterPaintEngine::drawCachedGlyphs explicitly forces Format_A8
+    on non-widget paint devices, losing LCD subpixel edges even on opaque
+    QImage/QPixmap surfaces. The private surface uses its source's screen
+    without introducing child events into the observed form hierarchy.
+    Every paint queries the source's current declarations.
+    """
+
+    def __init__(self, source: QLabel):
+        super().__init__()
+        self._source = source
+        self.setScreen(source.screen())
+        self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        self.resize(source.size())
+
+    def paintEvent(self, event):  # noqa: N802 - Qt virtual method name
+        widget = self._source
+        margin = widget.margin()
+        contents = widget.contentsRect().adjusted(margin, margin, -margin, -margin)
+        alignment = QStyle.visualAlignment(widget.layoutDirection(), widget.alignment())
+        indent = widget.indent()
+        if indent < 0 and widget.frameWidth():
+            indent = widget.fontMetrics().horizontalAdvance("x") // 2 - margin
+        indent = max(0, indent)
+        contents.adjust(
+            indent * bool(alignment & Qt.AlignmentFlag.AlignLeft),
+            indent * bool(alignment & Qt.AlignmentFlag.AlignTop),
+            -indent * bool(alignment & Qt.AlignmentFlag.AlignRight),
+            -indent * bool(alignment & Qt.AlignmentFlag.AlignBottom),
+        )
+        palette = widget.palette()
+        palette.setColor(widget.foregroundRole(), Qt.GlobalColor.white)
+        flags = alignment.value
+        if widget.wordWrap():
+            flags |= Qt.TextFlag.TextWordWrap.value
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), Qt.GlobalColor.black)
+        painter.setFont(widget.font())
+        widget.style().drawItemText(
+            painter, contents, flags, palette, widget.isEnabled(),
+            widget.text(), widget.foregroundRole(),
+        )
+
+
 def get_child_mask_path(
     widget: QWidget, window: QWidget, corner_radius: float = 0
 ) -> QPainterPath:
@@ -517,8 +562,6 @@ def get_child_mask_path(
     Returns:
         Window-relative QPainterPath preserving native text/control coverage
     """
-    from PyQt6.QtCore import QPoint
-
     widget_global = widget.mapToGlobal(QPoint(0, 0))
     widget_window = window.mapFromGlobal(widget_global)
 
@@ -545,47 +588,12 @@ def get_child_mask_path(
         return mask_path_from_rect(result, corner_radius if widget.text() else 0)
 
     if isinstance(widget, QLabel):
-        margin = widget.margin()
-        contents = widget.contentsRect().adjusted(margin, margin, -margin, -margin)
-        alignment = QStyle.visualAlignment(widget.layoutDirection(), widget.alignment())
-        indent = widget.indent()
-        if indent < 0 and widget.frameWidth():
-            indent = widget.fontMetrics().horizontalAdvance("x") // 2 - margin
-        indent = max(0, indent)
-        # QLabel's document rectangle includes alignment-dependent indentation;
-        # Font layout bounds alone do not include this native QLabel rule.
-        contents.adjust(
-            indent * bool(alignment & Qt.AlignmentFlag.AlignLeft),
-            indent * bool(alignment & Qt.AlignmentFlag.AlignTop),
-            -indent * bool(alignment & Qt.AlignmentFlag.AlignRight),
-            -indent * bool(alignment & Qt.AlignmentFlag.AlignBottom),
-        )
-        # Let the native style render its text coverage: font bounds cannot
-        # reproduce platform hinting, antialiasing, or underline rasterization.
-        device_ratio = widget.devicePixelRatioF()
-        coverage = QImage(
-            ceil(widget.width() * device_ratio),
-            ceil(widget.height() * device_ratio),
-            QImage.Format.Format_RGB32,
-        )
-        coverage.setDevicePixelRatio(device_ratio)
-        coverage.setDotsPerMeterX(round(widget.logicalDpiX() / 0.0254))
-        coverage.setDotsPerMeterY(round(widget.logicalDpiY() / 0.0254))
-        # Opaque paint targets preserve native LCD/subpixel antialiasing;
-        # transparent targets use grayscale and lose faint edge coverage.
-        coverage.fill(Qt.GlobalColor.black)
-        palette = widget.palette()
-        palette.setColor(widget.foregroundRole(), Qt.GlobalColor.white)
-        flags = alignment.value
-        if widget.wordWrap():
-            flags |= Qt.TextFlag.TextWordWrap.value
-        painter = QPainter(coverage)
-        painter.setFont(widget.font())
-        widget.style().drawItemText(
-            painter, contents, flags, palette, widget.isEnabled(),
-            widget.text(), widget.foregroundRole(),
-        )
-        painter.end()
+        surface = NativeLabelCoverageSurface(widget)
+        try:
+            coverage = surface.grab().toImage()
+        finally:
+            sip.delete(surface)
+        device_ratio = coverage.devicePixelRatio()
         pixels = QRegion(QBitmap.fromImage(
             coverage.createMaskFromColor(
                 QColor(Qt.GlobalColor.black).rgba(), Qt.MaskMode.MaskInColor
@@ -593,26 +601,17 @@ def get_child_mask_path(
         ))
         if pixels.isEmpty():
             return QPainterPath()
-        # Native backing-store filters can reach neighbouring device pixels at
-        # italic corners. Retain that fringe inside the native vertical extent,
-        # without adding blank rows above or below the rendered text.
-        native_bounds = pixels.boundingRect()
-        pixels = pixels.united(pixels.translated(-1, 0)).united(pixels.translated(1, 0))
-        pixels = pixels.united(pixels.translated(0, -1)).united(pixels.translated(0, 1))
-        pixels = pixels.intersected(QRegion(QRect(
-            0, native_bounds.top(), coverage.width(), native_bounds.height()
-        )))
         # Preserve each native contour's backing, including enclosed letter
         # counters, without joining unrelated glyphs or bridging word spaces.
         # Qt supplies the contours; their union fills counters independently of
         # winding direction while retaining the native exterior raster edge.
         contours = QPainterPath()
         contours.addRegion(pixels)
-        path = QPainterPath()
+        filled = QRegion()
         for polygon in contours.simplified().toSubpathPolygons():
-            contour = QPainterPath()
-            contour.addPolygon(polygon)
-            path = path.united(contour)
+            filled = filled.united(QRegion(polygon.toPolygon(), Qt.FillRule.WindingFill))
+        path = QPainterPath()
+        path.addRegion(filled)
         logical_pixels = QTransform.fromScale(1 / device_ratio, 1 / device_ratio)
         return logical_pixels.map(path).translated(widget_window.x(), widget_window.y())
     return mask_path_from_rect(widget.rect().translated(widget_window), corner_radius)

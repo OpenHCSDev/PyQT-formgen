@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import objectstate.config as config_module
 import pytest
 from objectstate import ObjectState, ObjectStateRegistry, set_base_config_type
-from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, Qt
 from PyQt6.QtGui import QColor, QPainterPath
 from PyQt6.QtWidgets import QDialog, QLabel, QVBoxLayout
 
@@ -107,6 +107,12 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(
     origin = QPointF(label.mapTo(host, QPoint()))
     outside = [point for point in text_pixels if not mask_path.contains(point + origin)]
     assert not outside, (mask, contents, outside[:10])
+    assert mask_path.boundingRect().left() == pytest.approx(
+        origin.x() + min(point.x() for point in text_pixels) - 0.5 / ratio
+    )
+    assert mask_path.boundingRect().right() == pytest.approx(
+        origin.x() + max(point.x() for point in text_pixels) + 0.5 / ratio
+    )
     assert mask_path.boundingRect().top() == pytest.approx(
         origin.y() + min(point.y() for point in text_pixels) - 0.5 / ratio
     )
@@ -138,6 +144,35 @@ def test_label_mask_preserves_letter_interiors_without_bridging_word_spaces(nest
     centers = sorted((polygon.boundingRect().center() for polygon in contours), key=lambda p: p.x())
     assert all(path.contains(center) for center in centers), "Letter counters need dark backing"
     assert not path.contains((centers[0] + centers[1]) / 2), "Word spaces must remain unmasked"
+
+
+def test_native_label_capture_preserves_source_and_releases_temporary_children(nested_form):
+    host, manager = nested_form
+    label = manager.labels["alpha"].findChild(QLabel)
+    before = (label.text(), label.font(), label.styleSheet(), label.geometry(), label.children())
+    for _ in range(3):
+        assert not get_child_mask_path(label, host).isEmpty()
+    after = (label.text(), label.font(), label.styleSheet(), label.geometry(), label.children())
+    assert after == before
+
+
+def test_native_label_capture_does_not_notify_live_hierarchy_observers(nested_form):
+    class ChildObserver(QObject):
+        def __init__(self):
+            super().__init__()
+            self.events = []
+
+        def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
+            if event.type() in {QEvent.Type.ChildAdded, QEvent.Type.ChildRemoved}:
+                self.events.append(event.type())
+            return False
+
+    host, manager = nested_form
+    label = manager.labels["alpha"].findChild(QLabel)
+    observer = ChildObserver()
+    label.installEventFilter(observer)
+    assert not get_child_mask_path(label, host).isEmpty()
+    assert observer.events == []
 
 
 @pytest.mark.parametrize("fields", [("alpha",), ("alpha", "beta")])
