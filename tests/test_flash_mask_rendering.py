@@ -1,12 +1,15 @@
 """Actual Qt paint geometry for nested parameter-form flash feedback."""
 
 from dataclasses import dataclass, field
+import json
+from hashlib import sha256
+from pathlib import Path
 
 import objectstate.config as config_module
 import pytest
 from objectstate import ObjectState, ObjectStateRegistry, set_base_config_type
-from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt6.QtGui import QColor, QPainterPath
+from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, qVersion
+from PyQt6.QtGui import QColor, QPainterPath, QFontInfo, QImage, QPainter
 from PyQt6.QtWidgets import QDialog, QLabel, QVBoxLayout
 
 from pyqt_reactive.animation.flash_mixin import (
@@ -71,7 +74,7 @@ def nested_form(qapp):
 @pytest.mark.parametrize("point_size", [9, 12])
 @pytest.mark.parametrize("italic", [False, True])
 def test_label_mask_is_tight_and_respects_alignment_and_style(
-    nested_form, qapp, text, width, underline, point_size, italic
+    nested_form, qapp, text, width, underline, point_size, italic, request
 ):
     host, manager = nested_form
     label = manager.labels["alpha"].findChild(QLabel)
@@ -106,7 +109,34 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(
     assert text_pixels
     origin = QPointF(label.mapTo(host, QPoint()))
     outside = [point for point in text_pixels if not mask_path.contains(point + origin)]
+    artifact = Path("raster-diagnostics") / sha256(request.node.callspec.id.encode()).hexdigest()[:16]
+    artifact.mkdir(parents=True, exist_ok=True)
+    image.save(str(artifact / "native.png"))
+    mask_image = QImage(image.size(), QImage.Format.Format_RGB32)
+    mask_image.setDevicePixelRatio(ratio)
+    mask_image.fill(Qt.GlobalColor.black)
+    painter = QPainter(mask_image)
+    painter.fillPath(mask_path.translated(-origin), Qt.GlobalColor.white)
+    painter.end()
+    mask_image.save(str(artifact / "mask.png"))
+    info = QFontInfo(label.font())
+    (artifact / "details.json").write_text(json.dumps({
+        "case": request.node.callspec.id, "qt": qVersion(), "platform": qapp.platformName(),
+        "font": label.font().toString(), "family": info.family(),
+        "resolved_point_size": info.pointSizeF(), "resolved_pixel_size": info.pixelSize(),
+        "ratio": ratio, "widget_dpi": [label.logicalDpiX(), label.logicalDpiY()],
+        "image_dpi": [image.logicalDpiX(), image.logicalDpiY()],
+        "label_rect": label.rect().getRect(), "contents_rect": label.contentsRect().getRect(),
+        "mask_bounds": mask_path.boundingRect().translated(-origin).getRect(),
+        "missing": [[point.x(), point.y()] for point in outside],
+    }, indent=2))
     assert not outside, (mask, contents, outside[:10])
+    assert mask_path.boundingRect().left() == pytest.approx(
+        origin.x() + min(point.x() for point in text_pixels) - 0.5 / ratio
+    )
+    assert mask_path.boundingRect().right() == pytest.approx(
+        origin.x() + max(point.x() for point in text_pixels) + 0.5 / ratio
+    )
     assert mask_path.boundingRect().top() == pytest.approx(
         origin.y() + min(point.y() for point in text_pixels) - 0.5 / ratio
     )

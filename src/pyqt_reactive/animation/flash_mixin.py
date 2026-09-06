@@ -72,7 +72,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import (
     QColor,
     QBitmap,
-    QImage,
+    QPixmap,
     QPainter,
     QPainterPath,
     QRegion,
@@ -563,16 +563,13 @@ def get_child_mask_path(
         # Let the native style render its text coverage: font bounds cannot
         # reproduce platform hinting, antialiasing, or underline rasterization.
         device_ratio = widget.devicePixelRatioF()
-        coverage = QImage(
+        coverage = QPixmap(
             ceil(widget.width() * device_ratio),
             ceil(widget.height() * device_ratio),
-            QImage.Format.Format_RGB32,
         )
         coverage.setDevicePixelRatio(device_ratio)
-        coverage.setDotsPerMeterX(round(widget.logicalDpiX() / 0.0254))
-        coverage.setDotsPerMeterY(round(widget.logicalDpiY() / 0.0254))
-        # Opaque paint targets preserve native LCD/subpixel antialiasing;
-        # transparent targets use grayscale and lose faint edge coverage.
+        # Use Qt's native opaque backing, as widget.grab() does, so font
+        # rasterisation supplies the edge coverage without synthetic dilation.
         coverage.fill(Qt.GlobalColor.black)
         palette = widget.palette()
         palette.setColor(widget.foregroundRole(), Qt.GlobalColor.white)
@@ -587,21 +584,12 @@ def get_child_mask_path(
         )
         painter.end()
         pixels = QRegion(QBitmap.fromImage(
-            coverage.createMaskFromColor(
+            coverage.toImage().createMaskFromColor(
                 QColor(Qt.GlobalColor.black).rgba(), Qt.MaskMode.MaskInColor
             )
         ))
         if pixels.isEmpty():
             return QPainterPath()
-        # Native backing-store filters can reach neighbouring device pixels at
-        # italic corners. Retain that fringe inside the native vertical extent,
-        # without adding blank rows above or below the rendered text.
-        native_bounds = pixels.boundingRect()
-        pixels = pixels.united(pixels.translated(-1, 0)).united(pixels.translated(1, 0))
-        pixels = pixels.united(pixels.translated(0, -1)).united(pixels.translated(0, 1))
-        pixels = pixels.intersected(QRegion(QRect(
-            0, native_bounds.top(), coverage.width(), native_bounds.height()
-        )))
         # Preserve each native contour's backing, including enclosed letter
         # counters, without joining unrelated glyphs or bridging word spaces.
         # Qt supplies the contours; their union fills counters independently of
