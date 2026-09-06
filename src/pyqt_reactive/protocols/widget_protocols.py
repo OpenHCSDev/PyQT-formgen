@@ -23,6 +23,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
 if TYPE_CHECKING:
+    from PyQt6.QtCore import QRect
     from PyQt6.QtWidgets import QWidget
     from objectstate import (
         DottedFieldPath,
@@ -59,6 +60,15 @@ def widget_capability_tags(widget_or_type: Any) -> frozenset[WidgetCapability]:
 def widget_supports_capability(widget_or_type: Any, capability: WidgetCapability) -> bool:
     """Return whether a widget class declares a nominal capability tag."""
     return capability in widget_capability_tags(widget_or_type)
+
+
+class FlashMaskRectProvider(ABC):
+    """A custom-painted widget owns the local geometry to preserve in a flash."""
+
+    @abstractmethod
+    def flash_mask_rect(self) -> QRect:
+        """Return this widget's local mask rectangle."""
+        ...
 
 
 class ValueGettable(ABC):

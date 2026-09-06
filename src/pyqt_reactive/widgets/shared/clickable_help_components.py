@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from pyqt_reactive.animation import FlashMixin
+from pyqt_reactive.animation.flash_mixin import LEAF_WIDGET_TYPES, resolve_mask_widgets
 from pyqt_reactive.forms import layout_constants
 from pyqt_reactive.protocols import (
     ChangeSignalEmitter,
@@ -40,6 +41,7 @@ from pyqt_reactive.protocols import (
     ValueSettable,
 )
 from pyqt_reactive.theming import AccentChromeColorPolicy, ColorScheme
+from pyqt_reactive.protocols.widget_protocols import FlashMaskRectProvider
 from pyqt_reactive.widgets.shared.scope_border_renderer import ScopeBorderRenderer
 from pyqt_reactive.widgets.shared.scope_color_receiver import ScopeColorSchemeReceiver
 from pyqt_reactive.widgets.shared.scope_visual_config import ScopeColorScheme
@@ -247,10 +249,14 @@ class ClickableParameterLabel(ClickableHelpLabel):
         )
 
 
-class HelpIndicator(QLabel):
+class HelpIndicator(QLabel, FlashMaskRectProvider, metaclass=PyQtWidgetMeta):
     """PyQt6 simple help indicator that can be added next to any widget - mirrors Textual TUI."""
     
     help_requested = pyqtSignal()
+
+    def flash_mask_rect(self) -> QRect:
+        """Preserve the complete styled icon, not just its question-mark glyph."""
+        return self.rect()
     
     def __init__(self, help_context: HelpContext):
         super().__init__("?", help_context.parent)
@@ -928,6 +934,10 @@ class GroupBoxWithHelp(
     def flash_masks_descendant_leaf_widgets(self) -> bool:
         """GroupBoxWithHelp flashes preserve readable child controls."""
         return True
+
+    def flash_title_mask_widgets(self) -> tuple[QWidget, ...]:
+        """Derive tight title/control cutouts from the responsive header."""
+        return tuple(resolve_mask_widgets(self.title_layout, LEAF_WIDGET_TYPES))
 
     def set_dirty_marker(self, is_dirty: bool, has_sig_diff: bool = False) -> None:
         """Update title styling for dirty (asterisk) and signature diff (underline).

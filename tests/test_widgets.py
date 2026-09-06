@@ -2024,8 +2024,8 @@ def test_config_hierarchy_tree_row_flashes_from_unscoped_descendant_path(qapp) -
         ObjectStateRegistry.clear()
 
 
-def test_nested_reset_flash_registers_each_changed_input_widget(qapp) -> None:
-    """Reset feedback paints the changed nested inputs as well as their context."""
+def test_nested_reset_flash_masks_each_changed_input_widget(qapp) -> None:
+    """Reset registers the changed nested input and label as contextual holes."""
     from dataclasses import field
 
     from objectstate import ObjectState, ObjectStateRegistry, set_base_config_type
@@ -2033,7 +2033,9 @@ def test_nested_reset_flash_registers_each_changed_input_widget(qapp) -> None:
 
     from pyqt_reactive.animation.flash_mixin import (
         WindowFlashOverlay,
-        widget_rect_flash_source_id,
+        get_child_mask_rect,
+        resolve_mask_widgets,
+        LEAF_WIDGET_TYPES,
     )
     from pyqt_reactive.forms.parameter_form_manager import (
         FormManagerConfig,
@@ -2074,13 +2076,13 @@ def test_nested_reset_flash_registers_each_changed_input_widget(qapp) -> None:
         for field_name in ("alpha", "beta"):
             widget = nested.widgets[field_name]
             label = nested.labels[field_name]
-            assert overlay.has_element_source(
-                f"child.{field_name}",
-                widget_rect_flash_source_id(widget),
-            )
-            assert overlay.has_element_source(
-                f"child.{field_name}",
-                widget_rect_flash_source_id(label),
+            elements = overlay._elements[f"child.{field_name}"]
+            assert len(elements) == 1
+            masks = [rect for rect, _ in elements[0].get_child_rects(host)]
+            assert get_child_mask_rect(widget, host) in masks
+            assert all(
+                get_child_mask_rect(child, host) in masks
+                for child in resolve_mask_widgets(label, LEAF_WIDGET_TYPES)
             )
     finally:
         WindowFlashOverlay.cleanup_window(host)
@@ -2090,8 +2092,8 @@ def test_nested_reset_flash_registers_each_changed_input_widget(qapp) -> None:
         ObjectStateRegistry.clear()
 
 
-def test_local_field_edit_flashes_its_complete_source_field(qapp) -> None:
-    """A local semantic edit flashes its input and label exactly at the source."""
+def test_local_field_edit_preserves_input_and_label_inside_opaque_context(qapp) -> None:
+    """A nested edit has one opaque source with clear input and label holes."""
     from dataclasses import field
 
     from objectstate import ObjectState, ObjectStateRegistry, set_base_config_type
@@ -2099,8 +2101,9 @@ def test_local_field_edit_flashes_its_complete_source_field(qapp) -> None:
 
     from pyqt_reactive.animation.flash_mixin import (
         WindowFlashOverlay,
-        widget_rect_flash_source_id,
     )
+    from PyQt6.QtGui import QColor
+    from PyQt6.QtCore import QPointF
     from pyqt_reactive.forms.parameter_form_manager import (
         FormManagerConfig,
         ParameterFormManager,
@@ -2134,25 +2137,20 @@ def test_local_field_edit_flashes_its_complete_source_field(qapp) -> None:
 
         overlay = WindowFlashOverlay.get_for_window(host)
         assert overlay is not None
-        assert overlay.has_element_source(
-            "child.alpha",
-            widget_rect_flash_source_id(nested.widgets["alpha"]),
-        )
-        assert overlay.has_element_source(
-            "child.alpha",
-            widget_rect_flash_source_id(nested.labels["alpha"]),
-        )
         elements = overlay._elements["child.alpha"]
-        alpha_scale_by_source = {
-            element.source_id: element.alpha_scale for element in elements
-        }
-        context_alpha_scale = min(alpha_scale_by_source.values())
-        assert alpha_scale_by_source[
-            widget_rect_flash_source_id(nested.widgets["alpha"])
-        ] > context_alpha_scale
-        assert alpha_scale_by_source[
-            widget_rect_flash_source_id(nested.labels["alpha"])
-        ] > context_alpha_scale
+        assert len(elements) == 1
+        overlay._rebuild_geometry_cache([], {"child.alpha"})
+        records, count = overlay._visible_paint_records(
+            {"child.alpha"}, colors={"child.alpha": QColor(255, 255, 255, 255)}
+        )
+        assert count == 1
+        assert len(records) == 1
+        assert records[0].color.alpha() == 255
+        path = records[0].path
+        assert path is not None
+        for widget in (nested.widgets["alpha"], nested.labels["alpha"]):
+            center = widget.mapTo(host, widget.rect().center())
+            assert not path.contains(QPointF(center))
     finally:
         WindowFlashOverlay.cleanup_window(host)
         host.close()
@@ -2203,6 +2201,8 @@ def test_widget_rect_flash_element_paints_visible_pixels_over_children(qapp) -> 
     assert rect is not None
     assert rect.contains(table_center)
 
+    if coordinator._timer is not None:
+        coordinator._timer.stop()
     baseline = overlay.grab().toImage().pixelColor(table_center)
     coordinator._computed_colors["section"] = QColor(255, 0, 0, 180)
     overlay._invalidate_geometry_cache()
@@ -2317,8 +2317,8 @@ def test_groupbox_flash_cache_invalidates_when_mask_child_geometry_changes(qapp)
     dialog.close()
 
 
-def test_groupbox_flash_cache_ignores_size_hint_only_text_changes(qapp) -> None:
-    """Rendered placeholder/text churn does not rebuild flash geometry by itself."""
+def test_groupbox_flash_cache_tracks_tight_label_bounds_without_widget_resize(qapp) -> None:
+    """A label's native content bounds change even when its widget stays fixed."""
 
     from PyQt6.QtWidgets import QDialog, QGroupBox, QLabel, QPushButton, QVBoxLayout
 
@@ -2372,8 +2372,11 @@ def test_groupbox_flash_cache_ignores_size_hint_only_text_changes(qapp) -> None:
     for _ in range(3):
         qapp.processEvents()
 
-    assert overlay._cache.element_rects["section.name"] is cached_rects
-    assert overlay._cache.element_regions["section.name"] is cached_regions
+    assert "section.name" not in overlay._cache.element_rects
+
+    overlay._rebuild_geometry_cache([], {"section.name"})
+    assert overlay._cache.element_rects["section.name"] is not cached_rects
+    assert overlay._cache.element_regions["section.name"] is not cached_regions
 
     label.setFixedSize(label.width() + 8, label.height())
     for _ in range(3):

@@ -30,11 +30,12 @@ FIX 3: Unified geometry cache
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Dict, Iterable, List, Optional, Set, Callable, Any, Tuple, TYPE_CHECKING
 import re
 from objectstate import DottedFieldPath
+from pyqt_reactive.protocols.widget_protocols import FlashMaskRectProvider
 from PyQt6.QtCore import (
     QCoreApplication,
     QObject,
@@ -43,7 +44,6 @@ from PyQt6.QtCore import (
     Qt,
     QRect,
     QRectF,
-    QSize,
     pyqtSignal,
     pyqtSlot,
 )
@@ -397,7 +397,20 @@ class FlashElement:
     get_model_index: Optional[Callable[[], Any]] = None  # Returns QModelIndex for targeted item updates (avoids full viewport repaint)
     layout_watch_widgets: Tuple[QWidget, ...] = field(default_factory=tuple)
     scroll_clip_widget: Optional[QWidget] = None  # Visual owner whose ancestor viewports bound this element.
-    alpha_scale: float = 1.0  # Relative emphasis within one semantic flash.
+
+    def paint_layer_token(self, source_token: str) -> str:
+        """Own an independent paint layer unless a container shares its masks."""
+        return source_token
+
+
+@dataclass(kw_only=True)
+class MaskedFlashElement(FlashElement):
+    """Share one painted container while retaining each leaf's geometry source."""
+
+    container: QWidget
+
+    def paint_layer_token(self, source_token: str) -> str:
+        return f"container:{id(self.container)}"
 
 
 def _scroll_clip_rects_for_element(
@@ -449,48 +462,30 @@ class OverlayFlashPaintRecord:
     path: Optional[QPainterPath]
     color: Optional[QColor] = None
 
+    def combined_with(self, other: "OverlayFlashPaintRecord") -> "OverlayFlashPaintRecord":
+        """Keep all active cutouts and the existing strongest-flash colour policy."""
+        own_alpha = self.color.alpha() if self.color is not None else -1
+        other_alpha = other.color.alpha() if other.color is not None else -1
+        strongest = other if other_alpha > own_alpha else self
+        if self.path is None:
+            return replace(strongest, path=other.path)
+        if other.path is None:
+            return replace(strongest, path=self.path)
+        return replace(strongest, path=self.path.intersected(other.path))
 
-# Mask strategy identifiers
-_MASK_STRATEGY_CHECKBOX_STYLE = "checkbox_style"
-_MASK_STRATEGY_LABEL_SIZEHINT = "label_sizehint"
-_MASK_STRATEGY_WIDGET_RECT = "widget_rect"
-_MASK_STRATEGY_FIXED_SQUARE = "fixed_square"
-
-# Mask strategy table (single source of truth)
-_MASK_STRATEGY_BY_WIDGET: Dict[type, str] = {
-    # Tight mask for checkmarks + label text
-    QCheckBox: _MASK_STRATEGY_CHECKBOX_STYLE,
-    # Tight mask for labels (avoid empty layout space)
-    QLabel: _MASK_STRATEGY_LABEL_SIZEHINT,
-}
 
 # Leaf widget types used for groupbox child masking
 LEAF_WIDGET_TYPES = (QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox,
                      QPushButton, QToolButton, QTextEdit, QPlainTextEdit,
                      QTreeWidget, QListWidget, QTableWidget, QLabel)
 
-def _resolve_mask_strategy(widget: QWidget) -> str:
-    """Resolve which masking strategy to use for a widget.
-
-    Returns a strategy id string from _MASK_STRATEGY_BY_WIDGET,
-    falling back to widget rect masking for unknown types.
-    """
-    for widget_type, strategy in _MASK_STRATEGY_BY_WIDGET.items():
-        if isinstance(widget, widget_type):
-            return strategy
-    # HelpButton: fixed-size square mask
-    from pyqt_reactive.widgets.shared.clickable_help_components import HelpButton
-    if isinstance(widget, HelpButton):
-        return _MASK_STRATEGY_FIXED_SQUARE
-    return _MASK_STRATEGY_WIDGET_RECT
-
-
 def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
     """Get mask rectangle for a groupbox child widget.
 
     This is the single source of truth for child masking geometry used by
-    both STANDARD and INVERSE groupbox flashes. Checkboxes and labels are
-    masked tightly; all other widgets use their full rect size.
+    both STANDARD and INVERSE groupbox flashes. Native checkboxes expose
+    their indicator geometry through Qt; labels use native text bounds with
+    alignment and margins. Other controls retain their full laid-out geometry.
 
     Args:
         widget: Widget to mask
@@ -504,22 +499,19 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
     widget_global = widget.mapToGlobal(QPoint(0, 0))
     widget_window = window.mapFromGlobal(widget_global)
 
-    strategy = _resolve_mask_strategy(widget)
+    if isinstance(widget, FlashMaskRectProvider):
+        return widget.flash_mask_rect().translated(widget_window)
 
     # QCheckBox: use style subelement rects for indicator + (optional) label
-    if strategy == _MASK_STRATEGY_CHECKBOX_STYLE:
-        checkbox_widget = widget if isinstance(widget, QCheckBox) else None
+    if isinstance(widget, QCheckBox):
         option = QStyleOptionButton()
-        if checkbox_widget is not None:
-            checkbox_widget.initStyleOption(option)
-            option.rect = checkbox_widget.rect()
-        else:
-            option.rect = widget.rect()
+        widget.initStyleOption(option)
+        option.rect = widget.rect()
 
         indicator_rect = widget.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, option, widget)
         contents_rect = widget.style().subElementRect(QStyle.SubElement.SE_CheckBoxContents, option, widget)
         checkbox_rect = indicator_rect
-        if checkbox_widget is not None and checkbox_widget.text():
+        if widget.text():
             checkbox_rect = checkbox_rect.united(contents_rect)
 
         result = QRect(widget_window.x() + checkbox_rect.x(),
@@ -529,44 +521,30 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
         logger.debug(f"[FLASH] get_child_mask_rect(QCheckBox): indicator={indicator_rect}, contents={contents_rect}, result={result}")
         return result
 
-    # QLabel: use sizeHint to avoid masking empty layout space
-    if strategy == _MASK_STRATEGY_LABEL_SIZEHINT:
-        widget_size = widget.sizeHint()
-        logger.debug(f"[FLASH] get_child_mask_rect(QLabel): using sizeHint={widget_size}")
-        if widget_size.isEmpty():
-            widget_size = widget.minimumSize()
-            logger.debug(f"[FLASH] get_child_mask_rect(QLabel): fallback to minimumSize={widget_size}")
-        if widget_size.isEmpty():
-            widget_size = widget.rect().size()
-            logger.debug(f"[FLASH] get_child_mask_rect(QLabel): fallback to rect().size()={widget_size}")
-
-        widget_geom = widget.geometry()
-        y_offset = (widget_geom.height() - widget_size.height()) // 2
-        result = QRect(widget_window.x(), widget_window.y() + y_offset, widget_size.width(), widget_size.height())
-        logger.debug(f"[FLASH] get_child_mask_rect(QLabel): result={result}")
-        return result
-
-    # HelpButton: use fixed square size if set
-    if strategy == _MASK_STRATEGY_FIXED_SQUARE:
-        square_size = widget.size()
-        from pyqt_reactive.widgets.shared.clickable_help_components import HelpButton
-        if isinstance(widget, HelpButton) and widget._square_size:
-            square_size = QSize(widget._square_size, widget._square_size)
-        widget_geom = widget.geometry()
-        y_offset = (widget_geom.height() - square_size.height()) // 2
-        result = QRect(widget_window.x(), widget_window.y() + y_offset, square_size.width(), square_size.height())
-        logger.debug(f"[FLASH] get_child_mask_rect(HelpButton): result={result}")
-        return result
-
-    # Other widgets: use actual rect size to avoid partial masking
-    widget_size = widget.rect().size()
-    logger.debug(f"[FLASH] get_child_mask_rect({type(widget).__name__}): using rect().size()={widget_size}")
-
-    widget_geom = widget.geometry()
-    y_offset = (widget_geom.height() - widget_size.height()) // 2
-    result = QRect(widget_window.x(), widget_window.y() + y_offset, widget_size.width(), widget_size.height())
-    logger.debug(f"[FLASH] get_child_mask_rect({type(widget).__name__}): result={result}")
-    return result
+    if isinstance(widget, QLabel):
+        margin = widget.margin()
+        contents = widget.contentsRect().adjusted(margin, margin, -margin, -margin)
+        alignment = QStyle.visualAlignment(widget.layoutDirection(), widget.alignment())
+        indent = widget.indent()
+        if indent < 0 and widget.frameWidth():
+            indent = widget.fontMetrics().horizontalAdvance("x") // 2 - margin
+        indent = max(0, indent)
+        # QLabel's document rectangle includes alignment-dependent indentation;
+        # QStyle.itemTextRect alone does not account for this native QLabel rule.
+        contents.adjust(
+            indent * bool(alignment & Qt.AlignmentFlag.AlignLeft),
+            indent * bool(alignment & Qt.AlignmentFlag.AlignTop),
+            -indent * bool(alignment & Qt.AlignmentFlag.AlignRight),
+            -indent * bool(alignment & Qt.AlignmentFlag.AlignBottom),
+        )
+        flags = alignment.value
+        if widget.wordWrap():
+            flags |= Qt.TextFlag.TextWordWrap.value
+        rect = widget.style().itemTextRect(
+            widget.fontMetrics(), contents, flags, widget.isEnabled(), widget.text()
+        )
+        return rect.translated(widget_window)
+    return widget.rect().translated(widget_window)
 
 
 def resolve_mask_widgets(widget: Optional[QWidget], preferred_types: tuple) -> List[QWidget]:
@@ -679,7 +657,7 @@ def _groupbox_mask_watch_widgets(
 
     if leaf_widget is not None or inverse_masking:
         watch_widgets.extend(resolve_mask_widgets(leaf_widget, LEAF_WIDGET_TYPES))
-        watch_widgets.extend(resolve_mask_widgets(label_widget, (QLabel,)))
+        watch_widgets.extend(resolve_mask_widgets(label_widget, LEAF_WIDGET_TYPES))
         watch_widgets.extend(_get_function_pane_title_widgets(groupbox))
         return _unique_live_widgets(watch_widgets)
 
@@ -840,7 +818,6 @@ def create_groupbox_element(
     inverse_masking: bool = False,
     extra_mask_rects: Optional[Callable[[QWidget], Iterable[Tuple[QRect, bool]]]] = None,
     extra_layout_watch_widgets: Iterable[QWidget] = (),
-    alpha_scale: float = 1.0,
 ) -> FlashElement:
     """Create a FlashElement for a QGroupBox with configurable masking.
 
@@ -859,7 +836,6 @@ def create_groupbox_element(
         inverse_masking: Use inverse masking even when the changed target is not a widget.
         extra_mask_rects: Window-relative mask rectangles for structural targets such as table cells.
         extra_layout_watch_widgets: Additional widgets whose geometry affects structural masks.
-        alpha_scale: Relative opacity of this source within the semantic flash.
     """
     # Track groupbox size to detect resize and invalidate child cache
     _last_groupbox_size: Optional[tuple] = None
@@ -909,15 +885,15 @@ def create_groupbox_element(
                 title_height = groupbox.fontMetrics().height() + 20  # Title row height
                 title_y_max = groupbox_global.y() + title_height
 
-                mask_leaf_widgets = resolve_mask_widgets(leaf_widget, LEAF_WIDGET_TYPES)
-                mask_label_widgets = resolve_mask_widgets(label_widget, (QLabel,))
+                mask_leaf_widgets = _unique_live_widgets((leaf_widget,))
+                mask_label_widgets = resolve_mask_widgets(label_widget, LEAF_WIDGET_TYPES)
 
                 # Add leaf_widget to exclusions using precise masking
                 for mask_leaf_widget in mask_leaf_widgets:
                     try:
                         leaf_rect = get_child_mask_rect(mask_leaf_widget, window)
                         logger.debug(f"[FLASH INVERSE] Added leaf_widget exclusion: {leaf_rect}")
-                        exclusions.append((leaf_rect, needs_square_checkbox_mask(mask_leaf_widget)))
+                        exclusions.append((leaf_rect, True))
                     except Exception as e:
                         logger.warning(f"[FLASH INVERSE] Failed to mask leaf_widget: {e}")
 
@@ -928,7 +904,7 @@ def create_groupbox_element(
                     try:
                         label_rect = get_child_mask_rect(mask_label_widget, window)
                         logger.debug(f"[FLASH INVERSE] Added label_widget exclusion: {label_rect}")
-                        exclusions.append((label_rect, False))
+                        exclusions.append((label_rect, True))
                     except Exception as e:
                         logger.warning(f"[FLASH INVERSE] Failed to mask label_widget: {e}")
 
@@ -1017,7 +993,8 @@ def create_groupbox_element(
     if radius == 0:
         radius = default_container_corner_radius_px()
 
-    return FlashElement(
+    return MaskedFlashElement(
+        container=groupbox,
         key=key,
         get_rect_in_window=get_rect,
         get_child_rects=None if use_full_rect else get_child_rects,
@@ -1043,7 +1020,6 @@ def create_groupbox_element(
             )
         ),
         scroll_clip_widget=groupbox,
-        alpha_scale=alpha_scale,
     )
 
 
@@ -1072,7 +1048,8 @@ def create_structural_masked_container_element(
     if radius == 0:
         radius = default_container_corner_radius_px()
 
-    return FlashElement(
+    return MaskedFlashElement(
+        container=container,
         key=key,
         get_rect_in_window=get_rect,
         get_child_rects=get_child_rects,
@@ -1090,8 +1067,6 @@ def create_structural_masked_container_element(
 def create_widget_rect_element(
     key: str,
     widget: QWidget,
-    *,
-    alpha_scale: float = 1.0,
 ) -> FlashElement:
     """Create a FlashElement that paints a widget's full visible rectangle.
 
@@ -1123,7 +1098,6 @@ def create_widget_rect_element(
         corner_radius=radius,
         layout_watch_widgets=(widget,),
         scroll_clip_widget=widget,
-        alpha_scale=alpha_scale,
     )
 
 
@@ -1503,7 +1477,7 @@ class WindowFlashOverlay(QWidget):
         self._hierarchical_delegate_keys: Set[str] = set()
         self._event_filter_sources: Dict[int, QObject] = {}
         self._element_widget_keys: Dict[int, Set[str]] = {}
-        self._element_widget_signatures: Dict[int, Tuple[int, int, int, int, bool]] = {}
+        self._element_widget_signatures: dict[int, tuple[QRect, QRect, bool]] = {}
         self._scroll_areas: List[Any] = []
         self._scroll_areas_dirty = True
         self._needs_raise = True
@@ -1677,8 +1651,8 @@ class WindowFlashOverlay(QWidget):
         """Install event filter on a flash element's widget to catch layout changes.
 
         This ensures cache invalidation when element widgets change actual
-        geometry. Text, placeholder, and style churn should not rebuild flash
-        geometry unless Qt also moves, resizes, hides, or shows the widget.
+        geometry. Label text or style changes also invalidate their tight text
+        bounds, even when the surrounding widget keeps the same rectangle.
         """
         for widget in element.layout_watch_widgets:
             if widget is None or sip.isdeleted(widget):
@@ -1708,14 +1682,11 @@ class WindowFlashOverlay(QWidget):
         self._invalidate_geometry_cache_for_widget(widget)
 
     @staticmethod
-    def _geometry_signature(widget: QWidget) -> Tuple[int, int, int, int, bool]:
+    def _geometry_signature(widget: QWidget) -> tuple[QRect, QRect, bool]:
         """Return the geometry facts used by flash mask/rect calculation."""
-        geometry = widget.geometry()
         return (
-            geometry.x(),
-            geometry.y(),
-            geometry.width(),
-            geometry.height(),
+            widget.geometry(),
+            get_child_mask_rect(widget, widget),
             widget.isVisible(),
         )
 
@@ -1742,6 +1713,9 @@ class WindowFlashOverlay(QWidget):
         ):
             if isinstance(obj, QWidget):
                 self._invalidate_geometry_cache_if_widget_signature_changed(obj)
+                if event_type == QEvent.Type.LayoutRequest:
+                    for child in obj.findChildren(QWidget):
+                        self._invalidate_geometry_cache_if_widget_signature_changed(child)
         elif event_type == QEvent.Type.Wheel:
             logger.debug(f"[FLASH] Event filter caught {event_type} on {obj.__class__.__name__}, invalidating cache")
             self._invalidate_geometry_cache()
@@ -1952,7 +1926,7 @@ class WindowFlashOverlay(QWidget):
             return (), 0
 
         records_by_source: dict[str, OverlayFlashPaintRecord] = {}
-        for key in visible_keys:
+        for key in sorted(visible_keys):
             elements = self._elements.get(key, ())
             cached_rects = self._cache.element_rects.get(key, ())
             cached_regions = self._cache.element_regions.get(key, ())
@@ -1970,30 +1944,22 @@ class WindowFlashOverlay(QWidget):
                     continue
 
                 path = cached_regions[index] if index < len(cached_regions) else None
-                source_token = self._paint_source_token(key, index, element)
-                element_color = None
-                if color is not None:
-                    element_color = QColor(color)
-                    element_color.setAlpha(
-                        round(element_color.alpha() * element.alpha_scale)
-                    )
+                source_token = element.paint_layer_token(
+                    self._paint_source_token(key, index, element)
+                )
                 record = OverlayFlashPaintRecord(
                     source_token=source_token,
                     key=key,
                     rect=rect,
                     radius=radius,
                     path=path,
-                    color=element_color,
+                    color=color,
                 )
                 existing = records_by_source.get(source_token)
                 if existing is None:
                     records_by_source[source_token] = record
                     continue
-                if element_color is None:
-                    continue
-                existing_alpha = existing.color.alpha() if existing.color is not None else -1
-                if element_color.alpha() > existing_alpha:
-                    records_by_source[source_token] = record
+                records_by_source[source_token] = existing.combined_with(record)
         return tuple(records_by_source.values()), len(visible_keys)
 
     def _flash_region_for_keys(
@@ -3474,8 +3440,6 @@ class VisualUpdateMixin:
         self,
         key: str,
         widget: QWidget,
-        *,
-        alpha_scale: float = 1.0,
     ) -> None:
         """Register a widget for direct full-rect flash rendering."""
         self._register_flash_element_internal(
@@ -3483,7 +3447,6 @@ class VisualUpdateMixin:
             lambda k: create_widget_rect_element(
                 k,
                 widget,
-                alpha_scale=alpha_scale,
             ),
             widget,
             source_id_factory=lambda _k: widget_rect_flash_source_id(widget),
@@ -3545,15 +3508,20 @@ class VisualUpdateMixin:
         - The specific leaf widget that changed
         - The label associated with the leaf widget (if provided)
 
-        Widget-rectangle sources registered under the same semantic key paint
-        the leaf widget and its label. The complete changed field therefore
-        participates in reset and provenance flashes without sacrificing the
-        surrounding context.
+        The changed input and label remain unobscured inside the opaque flash.
+        One masked source owns this effect; no second source repaints its holes.
 
         Uses the unified create_groupbox_element with leaf_widget and label_widget parameters.
         """
         logger.debug(f"[FLASH TRAIL] register_flash_leaf: key={key}, groupbox={type(groupbox).__name__}, leaf_widget={type(leaf_widget).__name__}, label_widget={type(label_widget).__name__ if label_widget else None}")
-        config = get_flash_config()
+        # A field can first be navigated while its lazy form is still building.
+        # Retire that coarse source when the actual field geometry is available.
+        self._cleanup_flash_registration(
+            self._flash_registrations,
+            self._flash_registration_lifecycle_keys,
+            (id(groupbox), key, id(groupbox), groupbox_flash_source_id(key, groupbox)),
+            self._get_scoped_flash_key(key),
+        )
         self._register_flash_element_internal(
             key,
             lambda k: create_groupbox_element(
@@ -3561,7 +3529,6 @@ class VisualUpdateMixin:
                 groupbox,
                 leaf_widget=leaf_widget,
                 label_widget=label_widget,
-                alpha_scale=config.leaf_context_alpha_scale,
             ),  # type: ignore
             groupbox,
             lifecycle_widgets=(leaf_widget, label_widget),
@@ -3572,17 +3539,6 @@ class VisualUpdateMixin:
                 label_widget=label_widget,
             ),
         )
-        self.register_flash_widget_rect(
-            key,
-            leaf_widget,
-            alpha_scale=config.leaf_field_alpha_scale,
-        )
-        if label_widget is not None:
-            self.register_flash_widget_rect(
-                key,
-                label_widget,
-                alpha_scale=config.leaf_field_alpha_scale,
-            )
 
     def reregister_flash_elements(self) -> None:
         """Re-register all previously registered flash elements (after overlay cleanup)."""

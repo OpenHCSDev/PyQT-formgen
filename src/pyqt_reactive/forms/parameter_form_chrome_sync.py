@@ -6,7 +6,6 @@ from collections.abc import Iterable
 from typing import Any, Set
 
 from objectstate import DottedFieldPath
-from pyqt_reactive.animation.flash_trace import flash_trace
 from pyqt_reactive.services.field_change_dispatcher import FieldChangeDispatcher, FieldChangeEvent
 
 
@@ -15,49 +14,6 @@ class ParameterFormChromeSync:
 
     def __init__(self, manager: Any) -> None:
         self.manager = manager
-
-    def after_model_field_change(
-        self,
-        param_name: str,
-        full_path: str,
-        *,
-        queue_flash: bool = True,
-        changed_paths: Set[str] | None = None,
-        refreshed_compound_owner_paths: set[str] | None = None,
-    ) -> None:
-        owns_child_flash = self._field_widget_owns_child_flash(param_name)
-        flash_trace(
-            "chrome.after_model",
-            manager=self.manager.field_id,
-            param=param_name,
-            path=full_path,
-            queue_flash=queue_flash,
-            owns_child_flash=owns_child_flash,
-        )
-        if queue_flash and not owns_child_flash:
-            self.manager.queue_field_flash(full_path)
-        self.changed_field_visuals(
-            param_name,
-            changed_paths,
-            refreshed_compound_owner_paths,
-        )
-
-    def _field_widget_owns_child_flash(self, param_name: str) -> bool:
-        from pyqt_reactive.protocols.widget_protocols import (
-            ChildFieldNavigationTargetProvider,
-            ChildFieldSemanticChromeRefreshable,
-            ChildSubfieldNavigationTargetProvider,
-        )
-
-        widget = self.manager.widgets.get(param_name)
-        return isinstance(
-            widget,
-            (
-                ChildFieldNavigationTargetProvider,
-                ChildFieldSemanticChromeRefreshable,
-                ChildSubfieldNavigationTargetProvider,
-            ),
-        )
 
     def changed_field_visuals(
         self,

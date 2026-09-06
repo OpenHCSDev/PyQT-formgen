@@ -507,7 +507,6 @@ class ParameterFormManager(
             self.shared_reset_fields = (
                 set()
             )  # VIEW-only: tracks field paths for cross-window reset styling
-            self._locally_applied_model_paths: Set[str] = set()
 
             # CROSS-WINDOW: Connect to change notifications (only root managers)
             # Nested managers are internal to their window and should not participate in cross-window updates.
@@ -935,22 +934,18 @@ class ParameterFormManager(
         param_name: str,
         full_path: str,
         *,
-        queue_flash: bool = True,
         changed_paths: Set[str] | None = None,
     ) -> None:
-        """Synchronize visible field chrome after ObjectState accepts a change."""
+        """Synchronize field chrome; resolved-value notifications own flashing."""
         refreshed_compound_owner_paths: set[str] = set()
         if changed_paths:
             refreshed_compound_owner_paths = (
                 self.chrome_sync.refresh_widgets_for_paths(changed_paths) or set()
             )
-        self.form_tree.root()._locally_applied_model_paths.add(full_path)
-        self.chrome_sync.after_model_field_change(
+        self.chrome_sync.changed_field_visuals(
             param_name,
-            full_path,
-            queue_flash=queue_flash,
-            changed_paths=changed_paths,
-            refreshed_compound_owner_paths=refreshed_compound_owner_paths,
+            changed_paths,
+            refreshed_compound_owner_paths,
         )
 
     def sync_enabled_field_visuals(self, value: ParameterValue) -> None:
@@ -1111,12 +1106,6 @@ class ParameterFormManager(
         self._resolved_changed_flush_scheduled = False
         if not changed_paths:
             return
-        local_paths = set(self._locally_applied_model_paths)
-        self._locally_applied_model_paths.clear()
-        widget_refresh_paths = self._widget_refresh_paths_for_changed_paths(
-            changed_paths,
-            local_paths,
-        )
         deferred_state_refresh_paths = self._pending_path_scoped_state_refresh or set()
         state_refresh_paths = changed_paths | deferred_state_refresh_paths
 
@@ -1130,19 +1119,17 @@ class ParameterFormManager(
         logger.debug(f"[FLASH] _on_resolved_values_changed: {changed_paths}")
 
         # Refresh widget display from the same canonical ObjectState paths that
-        # drive flash/styling. Local form edits have already set the same value;
-        # external ObjectState mutations (MCP, restore, time travel) need this
-        # listener to pull the visible widget values from ObjectState.
+        # drive flash/styling. WidgetService already skips equal assignments;
+        # no caller-side local-edit cache may suppress an authoritative refresh.
         with TimeTravelProfiler.phase(
             "pyqt.form.refresh_widgets_for_paths",
             scope=self.state.scope_id,
             paths=len(changed_paths),
         ):
             refreshed_compound_owner_paths: set[str] = set()
-            if widget_refresh_paths:
-                refreshed_compound_owner_paths.update(
-                    self.chrome_sync.refresh_widgets_for_paths(widget_refresh_paths) or set()
-                )
+            refreshed_compound_owner_paths.update(
+                self.chrome_sync.refresh_widgets_for_paths(changed_paths) or set()
+            )
             if state_refresh_paths:
                 self.chrome_sync.state_changed_for_paths(
                     state_refresh_paths,
@@ -1171,13 +1158,7 @@ class ParameterFormManager(
             paths=len(changed_paths),
         ):
             flash_paths: list[str] = []
-            flash_changed_paths = self._exclude_local_edit_paths(
-                changed_paths,
-                local_paths,
-            )
-            for path in ParameterFormManager._flash_paths_for_changed_paths(
-                flash_changed_paths
-            ):
+            for path in ParameterFormManager._flash_paths_for_changed_paths(changed_paths):
                 if self.field_id:
                     if "." in path:
                         path_prefix = path.rsplit(".", 1)[0]
@@ -1198,55 +1179,6 @@ class ParameterFormManager(
             sample_leaf = sample_path.split(".")[-1] if "." in sample_path else sample_path
             sample_prefix = sample_path.rsplit(".", 1)[0] if "." in sample_path else None
             logger.debug(f"[FLASH TRAIL] prefix={sample_prefix}, leaf_field={sample_leaf}")
-
-    @classmethod
-    def _exclude_local_edit_paths(
-        cls,
-        changed_paths: Set[str],
-        local_paths: Set[str],
-    ) -> Set[str]:
-        """Return changed paths that were not just applied by this form."""
-        if not local_paths:
-            return set(changed_paths)
-        return {
-            changed_path
-            for changed_path in changed_paths
-            if not any(
-                DottedFieldPath(local_path).contains_path(changed_path)
-                for local_path in local_paths
-            )
-        }
-
-    def _widget_refresh_paths_for_changed_paths(
-        self,
-        changed_paths: Set[str],
-        local_paths: Set[str],
-    ) -> Set[str]:
-        """Return changed paths whose visible widget value must be pulled from ObjectState."""
-
-        if not local_paths:
-            return set(changed_paths)
-
-        return {
-            changed_path
-            for changed_path in changed_paths
-            if (
-                not any(
-                    DottedFieldPath(local_path).contains_path(changed_path)
-                    for local_path in local_paths
-                )
-                or self._path_needs_resolved_preview_refresh(changed_path)
-            )
-        }
-
-    def _path_needs_resolved_preview_refresh(self, path: str) -> bool:
-        """Return whether a raw ``None`` path needs its inherited preview repainted."""
-
-        missing = object()
-        raw_value = self.state.parameters.get(path, missing)
-        if raw_value is not None:
-            return False
-        return self.state.get_resolved_value(path) is not None
 
     @staticmethod
     def _flash_paths_for_changed_paths(changed_paths: Set[str]) -> tuple[str, ...]:

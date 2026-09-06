@@ -69,9 +69,17 @@ Animation Phases
 
 Flash animations have three phases with configurable durations:
 
-1. **fade_in** (100ms): Quick fade-in with OutQuad easing
-2. **hold** (50ms): Hold at maximum intensity
-3. **fade_out** (350ms): Slow fade-out with InOutCubic easing
+1. **fade_in**: Quick fade-in with OutQuad easing
+2. **hold**: Hold at maximum intensity
+3. **fade_out**: Slow fade-out with InOutCubic easing
+
+``FlashConfig`` owns the durations and peak opacity. Model-driven flashes come
+from ObjectState's resolved-value change notifications: resetting an already
+default value does not flash, including an explicit default becoming inherited
+without changing its resolved value.
+The same notification refreshes visible values. ``WidgetService`` skips equal
+assignments using the widget's current value; forms do not maintain a separate
+local-edit suppression cache.
 
 Widget-Type-Specific Masking
 --------------------------------
@@ -81,9 +89,13 @@ Flash animations use widget-type-specific masking strategies for precise visual 
 **Masking Strategies**:
 
 - **Checkbox**: Tight mask for indicator + label text using Qt style subelement rects
-- **Label**: Tight mask using ``sizeHint()`` to avoid empty layout space
-- **Help Button**: Fixed square mask when ``_square_size`` is set
-- **All other widgets**: Full rectangle mask
+- **Labels**: Native Qt text bounds, including alignment, font and contents margins
+- **Other controls**: Full laid-out widget geometry
+- **Changed fields**: Complete inputs and individual label/help controls remain clear
+
+Custom controls declare ``FlashMaskRectProvider`` when their painted extent
+differs from their native Qt base. ``HelpIndicator`` preserves its complete
+styled icon rectangle, even though its Qt base is a label.
 
 **Checkbox Square Cutout**:
 
@@ -96,29 +108,10 @@ Textless checkboxes (no label) use square cutouts to avoid rounding:
 
 **Function Pane Title Masking**:
 
-Function panes mask title row widgets tightly:
-
-.. code-block:: python
-
-    def _get_function_pane_title_widgets(groupbox: QWidget) -> List[QWidget]:
-        pane = groupbox
-        while pane is not None:
-            if hasattr(pane, "_flash_title_container") or hasattr(pane, "_module_path_label"):
-                break
-            pane = pane.parentWidget()
-
-        widgets = []
-        module_label = getattr(pane, "_module_path_label", None)
-        if module_label and module_label.isVisible():
-            widgets.append(module_label)
-
-        title_container = getattr(pane, "_flash_title_container", None)
-        if title_container and title_container.isVisible():
-            for child in title_container.findChildren(QWidget):
-                if child.isVisible() and isinstance(child, LEAF_WIDGET_TYPES):
-                    widgets.append(child)
-
-        return widgets
+Title owners expose their visible controls through
+``flash_title_mask_widgets()``. ``GroupBoxWithHelp`` derives these controls from
+its existing title layout, so its label, help button and reset control remain
+clear without a second manually maintained list of title components.
 
 FlashElement Types
 ------------------
@@ -147,12 +140,21 @@ The system supports multiple element types via ``FlashElement`` dataclass:
 Context and leaf registration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``register_flash_leaf`` registers three paint sources under the same semantic
-key. The inverse groupbox source paints the surrounding field context while
-masking the title, changed input, and its label. Widget-rectangle sources paint
-the changed input and its label as one complete field. The shared
-``FlashConfig`` gives the surrounding context lower opacity than the field, so
-the edited control remains visually distinct and readable:
+``register_flash_leaf`` registers one inverse-mask source under the semantic
+field key. It paints the surrounding groupbox at the shared ``FlashConfig``
+opacity while leaving the title, complete changed input, label text and help
+controls clear. Label and responsive-title containers supply their visible
+controls rather than a rectangle covering the intervening empty layout space.
+When a lazily built field becomes available, its precise source replaces the
+temporary container-only source for that field.
+
+``MaskedFlashElement`` derives shared paint ownership from the physical
+container. When several fields change together, their independently cached
+geometry contributes to one paint layer. The painted paths intersect, retaining
+every active field's cutout. The strongest active flash supplies the colour and
+opacity; a fading field cannot repaint another active field's clear area.
+
+The registration API remains:
 
 .. code-block:: python
 
@@ -163,14 +165,14 @@ the edited control remains visually distinct and readable:
         label_widget=my_label
     )
 
-Reset and provenance feedback therefore remains visible on the actual nested
-input that changed as well as on the form context that explains where it lives.
+Reset and provenance feedback identifies the nested input through its clear
+cutout in the surrounding flash.
 
 **Masking Behavior**:
 
 - **STANDARD mode** (``leaf_widget=None``): Mask ALL children, flash only frame/background
 - **INVERSE context source** (``leaf_widget=widget``): Mask title + leaf widget + label, flash frame + siblings
-- **Leaf source**: Paint the leaf widget rectangle under the same semantic key
+- **Concurrent leaf sources**: Share one container paint layer with combined cutouts
 
 Usage with FlashMixin
 ---------------------
