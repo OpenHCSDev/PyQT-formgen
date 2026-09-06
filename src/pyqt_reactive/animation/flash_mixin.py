@@ -40,7 +40,6 @@ from pyqt_reactive.protocols.widget_protocols import FlashMaskRectProvider
 from PyQt6.QtCore import (
     QCoreApplication,
     QObject,
-    QPointF,
     QThread,
     QTimer,
     Qt,
@@ -72,12 +71,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import (
     QColor,
-    QFontMetricsF,
+    QBitmap,
+    QImage,
     QPainter,
     QPainterPath,
     QRegion,
-    QTextLayout,
-    QTextOption,
     QTransform,
 )
 from PyQt6 import sip
@@ -548,62 +546,33 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
             -indent * bool(alignment & Qt.AlignmentFlag.AlignRight),
             -indent * bool(alignment & Qt.AlignmentFlag.AlignBottom),
         )
-        metrics = QFontMetricsF(widget.font(), widget)
-        # Shaped glyphs own actual ink placement. Aggregate font text bounds
-        # align natural widths differently from wrapped/italic glyph advances.
-        layout = QTextLayout(widget.text().replace("\n", "\u2028"), widget.font(), widget)
-        option = QTextOption(alignment)
-        option.setTextDirection(widget.layoutDirection())
-        option.setWrapMode(
-            QTextOption.WrapMode.WordWrap
-            if widget.wordWrap()
-            else QTextOption.WrapMode.NoWrap
-        )
-        layout.setTextOption(option)
-        layout.beginLayout()
-        height = -metrics.leading()
-        while (line := layout.createLine()).isValid():
-            line.setLineWidth(contents.width())
-            height = ceil(height + metrics.leading())
-            line.setPosition(QPointF(0, height))
-            # QTextLine.height() rounds up; QLabel aligns the final line using
-            # the underlying fractional ascent/descent before device rounding.
-            height += line.ascent() + line.descent()
-        layout.endLayout()
-
-        ink = QRectF()
+        # Let the native style render its text coverage: font bounds cannot
+        # reproduce platform hinting, antialiasing, or underline rasterization.
         device_ratio = widget.devicePixelRatioF()
+        coverage = QImage(
+            ceil(widget.width() * device_ratio),
+            ceil(widget.height() * device_ratio),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        )
+        coverage.setDevicePixelRatio(device_ratio)
+        coverage.setDotsPerMeterX(round(widget.logicalDpiX() / 0.0254))
+        coverage.setDotsPerMeterY(round(widget.logicalDpiY() / 0.0254))
+        coverage.fill(Qt.GlobalColor.transparent)
+        flags = alignment.value
+        if widget.wordWrap():
+            flags |= Qt.TextFlag.TextWordWrap.value
+        painter = QPainter(coverage)
+        painter.setFont(widget.font())
+        widget.style().drawItemText(
+            painter, contents, flags, widget.palette(), widget.isEnabled(),
+            widget.text(), widget.foregroundRole(),
+        )
+        painter.end()
+        pixels = QRegion(QBitmap.fromImage(
+            coverage.createMaskFromColor(0, Qt.MaskMode.MaskInColor)
+        )).boundingRect()
         logical_pixels = QTransform.fromScale(1 / device_ratio, 1 / device_ratio)
-        for line_index in range(layout.lineCount()):
-            line = layout.lineAt(line_index)
-            for run in line.glyphRuns():
-                font = run.rawFont()
-                font.setPixelSize(font.pixelSize() * device_ratio)
-                for glyph, position in zip(run.glyphIndexes(), run.positions()):
-                    ink = ink.united(
-                        logical_pixels.mapRect(font.boundingRect(glyph)).translated(position)
-                    )
-            if widget.font().underline():
-                thickness = max(1, widget.fontMetrics().lineWidth())
-                underline_top = min(
-                    ceil(metrics.underlinePos()), metrics.descent() - thickness
-                )
-                ink = ink.united(
-                    QRectF(
-                        line.naturalTextRect().left(),
-                        line.y() + line.ascent() + underline_top,
-                        line.horizontalAdvance(),
-                        thickness,
-                    )
-                )
-        vertical_alignment = (
-            bool(alignment & Qt.AlignmentFlag.AlignBottom)
-            + 0.5 * bool(alignment & Qt.AlignmentFlag.AlignVCenter)
-        )
-        ink.translate(
-            contents.x(), contents.y() + (contents.height() - height) * vertical_alignment
-        )
-        return ink.toAlignedRect().translated(widget_window)
+        return logical_pixels.mapRect(QRectF(pixels)).toAlignedRect().translated(widget_window)
     return widget.rect().translated(widget_window)
 
 
