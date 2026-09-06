@@ -504,13 +504,16 @@ class NativeLabelCoverageSurface(QWidget):
 
     Qt's QRasterPaintEngine::drawCachedGlyphs explicitly forces Format_A8
     on non-widget paint devices, losing LCD subpixel edges even on opaque
-    QImage/QPixmap surfaces. The hidden child inherits its source's screen
-    and device scaling; every paint queries the source's current declarations.
+    QImage/QPixmap surfaces. The private surface uses its source's screen
+    without introducing child events into the observed form hierarchy.
+    Every paint queries the source's current declarations.
     """
 
     def __init__(self, source: QLabel):
-        super().__init__(source)
+        super().__init__()
         self._source = source
+        self.setScreen(source.screen())
+        self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         self.resize(source.size())
 
     def paintEvent(self, event):  # noqa: N802 - Qt virtual method name
