@@ -395,7 +395,7 @@ class FlashElement:
     """
     key: str  # Scoped ObjectState path that owns this visual element.
     get_rect_in_window: Callable[[QWidget], Optional[QRect]]
-    get_child_rects: Optional[Callable[[QWidget], List[Tuple[QRect, bool]]]] = None  # For masking child widgets
+    get_child_paths: Callable[[QWidget], Iterable[QPainterPath]] | None = None
     needs_scroll_clipping: bool = True  # Groupboxes need clipping, list/tree items don't (they handle it themselves)
     source_id: Optional[str] = None  # Unique identifier for deduplication (e.g., "groupbox:123", "list_item:scope_id")
     corner_radius: float = 0.0  # Rounded corners (0 = sharp, >0 = rounded)
@@ -488,8 +488,22 @@ LEAF_WIDGET_TYPES = (QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox,
                      QPushButton, QToolButton, QTextEdit, QPlainTextEdit,
                      QTreeWidget, QListWidget, QTableWidget, QLabel)
 
+def mask_path_from_rect(rect: QRect, corner_radius: float = 0) -> QPainterPath:
+    """Project a rectangular control's owned geometry into a paint mask."""
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(rect), corner_radius, corner_radius)
+    return path
+
+
 def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
-    """Get mask rectangle for a groupbox child widget.
+    """Project child mask coverage to its enclosing layout rectangle."""
+    return get_child_mask_path(widget, window).boundingRect().toAlignedRect()
+
+
+def get_child_mask_path(
+    widget: QWidget, window: QWidget, corner_radius: float = 0
+) -> QPainterPath:
+    """Get native paint coverage for a groupbox child widget.
 
     This is the single source of truth for child masking geometry used by
     both STANDARD and INVERSE groupbox flashes. Native checkboxes expose
@@ -501,7 +515,7 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
         window: Reference window for coordinate transformation
 
     Returns:
-        QRect with position and size for masking
+        Window-relative QPainterPath preserving native text/control coverage
     """
     from PyQt6.QtCore import QPoint
 
@@ -509,7 +523,7 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
     widget_window = window.mapFromGlobal(widget_global)
 
     if isinstance(widget, FlashMaskRectProvider):
-        return widget.flash_mask_rect().translated(widget_window)
+        return mask_path_from_rect(widget.flash_mask_rect().translated(widget_window))
 
     # QCheckBox: use style subelement rects for indicator + (optional) label
     if isinstance(widget, QCheckBox):
@@ -528,7 +542,7 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
                        checkbox_rect.width(),
                        checkbox_rect.height())
         logger.debug(f"[FLASH] get_child_mask_rect(QCheckBox): indicator={indicator_rect}, contents={contents_rect}, result={result}")
-        return result
+        return mask_path_from_rect(result, corner_radius if widget.text() else 0)
 
     if isinstance(widget, QLabel):
         margin = widget.margin()
@@ -576,15 +590,25 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
             coverage.createMaskFromColor(
                 QColor(Qt.GlobalColor.black).rgba(), Qt.MaskMode.MaskInColor
             )
-        )).boundingRect()
+        ))
         if pixels.isEmpty():
-            return QRect()
+            return QPainterPath()
         # Native backing-store LCD filters can extend coverage into the adjacent
         # device pixel. Preserve that raster fringe, not a logical UI padding.
-        pixels = pixels.adjusted(-1, -1, 1, 1).intersected(coverage.rect())
+        pixels = pixels.united(pixels.translated(-1, 0)).united(pixels.translated(1, 0))
+        pixels = pixels.united(pixels.translated(0, -1)).united(pixels.translated(0, 1))
+        pixels = pixels.intersected(QRegion(coverage.rect()))
+        # A native scanline envelope retains a solid contrasting backdrop behind
+        # text without masking the unused corners or gaps between wrapped lines.
+        path = QPainterPath()
+        bounds = pixels.boundingRect()
+        for y in range(bounds.top(), bounds.bottom() + 1):
+            row = pixels.intersected(QRegion(QRect(bounds.left(), y, bounds.width(), 1)))
+            if not row.isEmpty():
+                path.addRect(QRectF(row.boundingRect()))
         logical_pixels = QTransform.fromScale(1 / device_ratio, 1 / device_ratio)
-        return logical_pixels.mapRect(QRectF(pixels)).toAlignedRect().translated(widget_window)
-    return widget.rect().translated(widget_window)
+        return logical_pixels.map(path).translated(widget_window.x(), widget_window.y())
+    return mask_path_from_rect(widget.rect().translated(widget_window), corner_radius)
 
 
 def resolve_mask_widgets(widget: Optional[QWidget], preferred_types: tuple) -> List[QWidget]:
@@ -626,13 +650,6 @@ def _unique_live_widgets(widgets: Iterable[Optional[QWidget]]) -> Tuple[QWidget,
     return tuple(unique_widgets)
 
 
-def needs_square_mask(widget: QWidget) -> bool:
-    """Preserve tight text bounds and checkbox indicators without clipped corners."""
-    return isinstance(widget, QLabel) or (
-        isinstance(widget, QCheckBox) and not widget.text()
-    )
-
-
 def _unmasked_groupbox_widgets(groupbox: QWidget) -> set[QWidget]:
     """Return widgets explicitly left readable during standard groupbox flashes."""
     if isinstance(groupbox, VisualUpdateMixin):
@@ -667,16 +684,17 @@ def container_descendant_mask_watch_widgets(container: QWidget) -> Tuple[QWidget
     return _unique_live_widgets(mask_widgets)
 
 
-def container_descendant_mask_rects(container: QWidget, window: QWidget) -> List[Tuple[QRect, bool]]:
+def container_descendant_mask_paths(
+    container: QWidget, window: QWidget, corner_radius: float = 0
+) -> list[QPainterPath]:
     """Return standard child/control masks for a container flash."""
-    child_rects: List[Tuple[QRect, bool]] = []
+    child_paths: list[QPainterPath] = []
     for child in container_descendant_mask_watch_widgets(container):
         if sip.isdeleted(child) or not child.isVisibleTo(container):
             continue
-        child_rect = get_child_mask_rect(child, window)
-        child_rects.append((child_rect, needs_square_mask(child)))
-    child_rects.extend(_get_groupbox_title_mask_rects(container, window))
-    return child_rects
+        child_paths.append(get_child_mask_path(child, window, corner_radius))
+    child_paths.extend(_get_groupbox_title_mask_paths(container, window, corner_radius))
+    return child_paths
 
 
 def _groupbox_mask_watch_widgets(
@@ -810,12 +828,14 @@ def _get_function_pane_title_widgets(groupbox: QWidget) -> List[QWidget]:
     return unique_widgets
 
 
-def _get_groupbox_title_mask_rects(groupbox: QWidget, window: QWidget) -> List[Tuple[QRect, bool]]:
+def _get_groupbox_title_mask_paths(
+    groupbox: QWidget, window: QWidget, corner_radius: float = 0
+) -> list[QPainterPath]:
     """Return mask rects for visible QGroupBox title text painted by Qt styles."""
     from PyQt6.QtWidgets import QGroupBox
     from PyQt6.QtCore import QPoint
 
-    rects: List[Tuple[QRect, bool]] = []
+    paths: list[QPainterPath] = []
     for titled_group in groupbox.findChildren(QGroupBox):
         title = titled_group.title()
         if not title or not titled_group.isVisible() or not titled_group.isVisibleTo(window):
@@ -835,16 +855,16 @@ def _get_groupbox_title_mask_rects(groupbox: QWidget, window: QWidget) -> List[T
             if padding_match:
                 extra_width = int(padding_match.group(1)) * 2
 
-        rects.append((
+        paths.append(mask_path_from_rect(
             QRect(
                 group_window_pos.x() + left_padding,
                 group_window_pos.y(),
                 metrics.horizontalAdvance(title) + extra_width,
                 metrics.height() + 4,
             ),
-            False,
+            corner_radius,
         ))
-    return rects
+    return paths
 
 
 def create_groupbox_element(
@@ -854,7 +874,7 @@ def create_groupbox_element(
     label_widget: Optional[QWidget] = None,
     use_full_rect: bool = False,
     inverse_masking: bool = False,
-    extra_mask_rects: Optional[Callable[[QWidget], Iterable[Tuple[QRect, bool]]]] = None,
+    extra_mask_paths: Callable[[QWidget, float], Iterable[QPainterPath]] | None = None,
     extra_layout_watch_widgets: Iterable[QWidget] = (),
 ) -> FlashElement:
     """Create a FlashElement for a QGroupBox with configurable masking.
@@ -872,7 +892,7 @@ def create_groupbox_element(
         leaf_widget: If provided, use inverse masking (flash siblings, mask this widget)
         label_widget: Optional label widget to mask (used with leaf_widget in INVERSE mode)
         inverse_masking: Use inverse masking even when the changed target is not a widget.
-        extra_mask_rects: Window-relative mask rectangles for structural targets such as table cells.
+        extra_mask_paths: Window-relative native masks for structural targets such as table cells.
         extra_layout_watch_widgets: Additional widgets whose geometry affects structural masks.
     """
     # Track groupbox size to detect resize and invalidate child cache
@@ -887,7 +907,7 @@ def create_groupbox_element(
             use_full_rect=use_full_rect,
         )
 
-    def get_child_rects(window: QWidget) -> List[Tuple[QRect, bool]]:
+    def get_child_paths(window: QWidget) -> list[QPainterPath]:
         """Get widgets to exclude from flash (mask out).
 
         Two modes based on leaf_widget parameter:
@@ -900,7 +920,10 @@ def create_groupbox_element(
         """
         nonlocal _last_groupbox_size, _cached_child_widgets
 
-        logger.debug(f"[FLASH] get_child_rects START: leaf_widget={type(leaf_widget).__name__ if leaf_widget else None}, label_widget={type(label_widget).__name__ if label_widget else None}, groupbox={type(groupbox).__name__}")
+        logger.debug(
+            "[FLASH] Mask sources: leaf=%s label=%s container=%s",
+            type(leaf_widget).__name__, type(label_widget).__name__, type(groupbox).__name__,
+        )
         
         # If the groupbox isn't visible to this window (e.g., tab not selected), skip masking
         if not groupbox.isVisible() or not groupbox.isVisibleTo(window):
@@ -912,7 +935,7 @@ def create_groupbox_element(
         # All other widgets get flashed
         if leaf_widget is not None or inverse_masking:
             logger.debug(f"[FLASH] INVERSE MODE: Masking title + leaf_widget + label_widget only")
-            exclusions: List[Tuple[QRect, bool]] = []
+            exclusions: list[QPainterPath] = []
             try:
                 if leaf_widget is not None and not leaf_widget.isVisible():
                     return []
@@ -929,9 +952,7 @@ def create_groupbox_element(
                 # Add leaf_widget to exclusions using precise masking
                 for mask_leaf_widget in mask_leaf_widgets:
                     try:
-                        leaf_rect = get_child_mask_rect(mask_leaf_widget, window)
-                        logger.debug(f"[FLASH INVERSE] Added leaf_widget exclusion: {leaf_rect}")
-                        exclusions.append((leaf_rect, True))
+                        exclusions.append(get_child_mask_path(mask_leaf_widget, window))
                     except Exception as e:
                         logger.warning(f"[FLASH INVERSE] Failed to mask leaf_widget: {e}")
 
@@ -940,16 +961,12 @@ def create_groupbox_element(
                     if not mask_label_widget.isVisible():
                         continue
                     try:
-                        label_rect = get_child_mask_rect(mask_label_widget, window)
-                        logger.debug(f"[FLASH INVERSE] Added label_widget exclusion: {label_rect}")
-                        exclusions.append((label_rect, True))
+                        exclusions.append(get_child_mask_path(mask_label_widget, window))
                     except Exception as e:
                         logger.warning(f"[FLASH INVERSE] Failed to mask label_widget: {e}")
 
-                if extra_mask_rects is not None:
-                    for extra_rect, needs_square_cutout in extra_mask_rects(window):
-                        if extra_rect.isValid() and not extra_rect.isNull():
-                            exclusions.append((extra_rect, needs_square_cutout))
+                if extra_mask_paths is not None:
+                    exclusions.extend(extra_mask_paths(window, radius))
 
                 # Mask title row widgets only for real groupboxes (avoid masking first row in plain containers)
                 from PyQt6.QtWidgets import QGroupBox
@@ -968,9 +985,7 @@ def create_groupbox_element(
 
                             # Only mask title row widgets - not widgets in leaf_widget's row
                             if child_y < title_y_max:
-                                child_rect = get_child_mask_rect(child, window)
-                                logger.debug(f"[FLASH INVERSE] Added title row exclusion: {child_rect}")
-                                exclusions.append((child_rect, needs_square_mask(child)))
+                                exclusions.append(get_child_mask_path(child, window, radius))
                         except Exception as e:
                             logger.warning(f"[FLASH INVERSE] Failed to mask title child {type(child).__name__}: {e}")
                             pass
@@ -978,12 +993,11 @@ def create_groupbox_element(
                 # Function panes: mask title row widgets tightly
                 for title_widget in _get_function_pane_title_widgets(groupbox):
                     try:
-                        title_rect = get_child_mask_rect(title_widget, window)
-                        exclusions.append((title_rect, needs_square_mask(title_widget)))
+                        exclusions.append(get_child_mask_path(title_widget, window, radius))
                     except Exception as e:
                         logger.warning(f"[FLASH INVERSE] Failed to mask function pane title widget: {e}")
 
-                exclusions.extend(_get_groupbox_title_mask_rects(groupbox, window))
+                exclusions.extend(_get_groupbox_title_mask_paths(groupbox, window, radius))
 
                 logger.debug(f"[FLASH INVERSE] Total exclusions: {len(exclusions)}")
             except Exception as e:
@@ -994,7 +1008,7 @@ def create_groupbox_element(
 
         # STANDARD MODE: Mask all children
         logger.debug(f"[FLASH] STANDARD MODE: Masking all children")
-        child_rects: List[Tuple[QRect, bool]] = []
+        child_paths: list[QPainterPath] = []
         groupbox_global = groupbox.mapToGlobal(QPoint(0, 0))
         groupbox_window = window.mapFromGlobal(groupbox_global)
 
@@ -1014,17 +1028,16 @@ def create_groupbox_element(
         for child in _cached_child_widgets:
             if sip.isdeleted(child) or not child.isVisibleTo(groupbox):
                 continue
-            child_rect = get_child_mask_rect(child, window)
-            child_rects.append((child_rect, needs_square_mask(child)))
+            child_paths.append(get_child_mask_path(child, window, radius))
 
-        child_rects.extend(_get_groupbox_title_mask_rects(groupbox, window))
+        child_paths.extend(_get_groupbox_title_mask_paths(groupbox, window, radius))
 
         # DEBUG: Log groupbox position and first 2 child positions
-        if child_rects:
-            first_children = [f"({r.x()},{r.y()})" for r, _ in child_rects[:2]]
-            logger.debug(f"[FLASH] GET_CHILD_RECTS groupbox_id={id(groupbox)} groupbox_window_pos=({groupbox_window.x()},{groupbox_window.y()}) first_children={first_children} total={len(child_rects)}")
-        logger.debug(f"[FLASH] STANDARD MODE: Returning {len(child_rects)} exclusions")
-        return child_rects
+        if child_paths:
+            first_children = [str(path.boundingRect()) for path in child_paths[:2]]
+            logger.debug("[FLASH] Child masks: %s", first_children)
+        logger.debug(f"[FLASH] STANDARD MODE: Returning {len(child_paths)} exclusions")
+        return child_paths
 
     # Extract corner radius from groupbox stylesheet (cached)
     radius = get_widget_corner_radius(groupbox)
@@ -1035,7 +1048,7 @@ def create_groupbox_element(
         container=groupbox,
         key=key,
         get_rect_in_window=get_rect,
-        get_child_rects=None if use_full_rect else get_child_rects,
+        get_child_paths=None if use_full_rect else get_child_paths,
         source_id=groupbox_flash_source_id(
             key,
             groupbox,
@@ -1064,7 +1077,7 @@ def create_groupbox_element(
 def create_structural_masked_container_element(
     key: str,
     container: QWidget,
-    mask_rects: Callable[[QWidget], Iterable[Tuple[QRect, bool]]],
+    mask_paths: Callable[[QWidget, float], Iterable[QPainterPath]],
     *,
     layout_watch_widgets: Iterable[QWidget] = (),
 ) -> FlashElement:
@@ -1073,13 +1086,11 @@ def create_structural_masked_container_element(
     def get_rect(window: QWidget) -> Optional[QRect]:
         return _container_rect_in_window(container, window)
 
-    def get_child_rects(window: QWidget) -> List[Tuple[QRect, bool]]:
+    def get_child_paths(window: QWidget) -> list[QPainterPath]:
         if not container.isVisible() or not container.isVisibleTo(window):
             return []
         return [
-            (mask_rect, needs_square_cutout)
-            for mask_rect, needs_square_cutout in mask_rects(window)
-            if mask_rect.isValid() and not mask_rect.isNull()
+            path for path in mask_paths(window, radius) if not path.isEmpty()
         ]
 
     radius = get_widget_corner_radius(container)
@@ -1090,7 +1101,7 @@ def create_structural_masked_container_element(
         container=container,
         key=key,
         get_rect_in_window=get_rect,
-        get_child_rects=get_child_rects,
+        get_child_paths=get_child_paths,
         source_id=groupbox_flash_source_id(
             key,
             container,
@@ -1131,7 +1142,7 @@ def create_widget_rect_element(
     return FlashElement(
         key=key,
         get_rect_in_window=get_rect,
-        get_child_rects=None,
+        get_child_paths=None,
         source_id=widget_rect_flash_source_id(widget),
         corner_radius=radius,
         layout_watch_widgets=(widget,),
@@ -1167,7 +1178,7 @@ def create_table_cell_element(key: str, target: "StructuralTableCellTarget") -> 
     return FlashElement(
         key=key,
         get_rect_in_window=get_rect,
-        get_child_rects=None,
+        get_child_paths=None,
         source_id=table_cell_flash_source_id(target),
         layout_watch_widgets=(target.table, target.table.viewport()),
         scroll_clip_widget=target.table,
@@ -1720,11 +1731,11 @@ class WindowFlashOverlay(QWidget):
         self._invalidate_geometry_cache_for_widget(widget)
 
     @staticmethod
-    def _geometry_signature(widget: QWidget) -> tuple[QRect, QRect, bool]:
+    def _geometry_signature(widget: QWidget) -> tuple[QRect, QPainterPath, bool]:
         """Return the geometry facts used by flash mask/rect calculation."""
         return (
             widget.geometry(),
-            get_child_mask_rect(widget, widget),
+            get_child_mask_path(widget, widget),
             widget.isVisible(),
         )
 
@@ -1864,20 +1875,16 @@ class WindowFlashOverlay(QWidget):
                 # Get corner radius from element (0 for tree/list items, >0 for groupboxes)
                 radius = element.corner_radius
 
-                if element.get_child_rects:
-                    child_rects = tuple(element.get_child_rects(self._window))
+                if element.get_child_paths:
+                    child_paths = tuple(element.get_child_paths(self._window))
                     path = QPainterPath()
                     path.addRoundedRect(QRectF(rect_to_draw), radius, radius)
                     subtracted_count = 0
                     first_children = [] if debug_enabled else None
-                    for i, (child_rect, child_is_checkbox) in enumerate(child_rects):
-                        if child_rect.intersects(rect_to_draw):
+                    for i, child_path in enumerate(child_paths):
+                        child_rect = child_path.boundingRect()
+                        if child_rect.intersects(QRectF(rect_to_draw)):
                             subtracted_count += 1
-                            child_path = QPainterPath()
-                            if child_is_checkbox:
-                                child_path.addRect(QRectF(child_rect))
-                            else:
-                                child_path.addRoundedRect(QRectF(child_rect), radius, radius)
                             path = path.subtracted(child_path)
                         if debug_enabled and first_children is not None and i < 3:
                             first_children.append(f"({child_rect.x()},{child_rect.y()} {child_rect.width()}x{child_rect.height()})")
@@ -1890,7 +1897,7 @@ class WindowFlashOverlay(QWidget):
                             rect_to_draw.y(),
                             first_children,
                             subtracted_count,
-                            len(child_rects),
+                            len(child_paths),
                     )
                     rect_tuple = (rect_to_draw, radius)
                     rects.append(rect_tuple)  # Cache rect + radius tuple
@@ -3507,7 +3514,7 @@ class VisualUpdateMixin:
         self,
         key: str,
         container: QWidget,
-        mask_rects: Callable[[QWidget], Iterable[Tuple[QRect, bool]]],
+        mask_paths: Callable[[QWidget, float], Iterable[QPainterPath]],
         *,
         label_widget: Optional[QWidget] = None,
         layout_watch_widgets: Iterable[QWidget] = (),
@@ -3518,7 +3525,7 @@ class VisualUpdateMixin:
             lambda k: create_structural_masked_container_element(
                 k,
                 container,
-                mask_rects,
+                mask_paths,
                 layout_watch_widgets=layout_watch_widgets,
             ),
             container,

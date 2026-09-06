@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 
 from PyQt6.QtCore import QPoint, QRect
+from PyQt6.QtGui import QPainterPath
 from PyQt6.QtWidgets import QWidget, QTableWidget
 from objectstate import (
     ObjectStateSubfieldSemantic,
@@ -50,10 +51,14 @@ class StructuralFlashTarget(ABC):
         """Return this target's precise rectangle in an ancestor widget."""
         pass
 
-    @abstractmethod
-    def mask_rects_in_window(self, window: QWidget) -> tuple[tuple[QRect, bool], ...]:
-        """Return precise rectangles to subtract from a containing flash."""
-        pass
+    def mask_paths_in_window(
+        self, window: QWidget, corner_radius: float = 0
+    ) -> tuple[QPainterPath, ...]:
+        """Project this target's owned rectangle into a containing flash mask."""
+        from pyqt_reactive.animation.flash_mixin import mask_path_from_rect
+
+        rect = self.scroll_rect_in(window)
+        return () if rect is None else (mask_path_from_rect(rect, corner_radius),)
 
     def layout_watch_widgets(self) -> tuple[QWidget, ...]:
         """Return widgets whose geometry contributes to this target."""
@@ -90,17 +95,11 @@ class StructuralTableCellTarget(StructuralFlashTarget):
         cell_rect = self._cell_rect()
         if cell_rect is None:
             return None
-        top_left = ancestor.mapFromGlobal(
-            self.table.viewport().mapToGlobal(cell_rect.topLeft())
-        )
+        top_left = ancestor.mapFromGlobal(self.table.viewport().mapToGlobal(cell_rect.topLeft()))
         return QRect(top_left, cell_rect.size())
 
     def scroll_rect_in(self, ancestor: QWidget) -> QRect | None:
         return self._cell_rect_in(ancestor)
-
-    def mask_rects_in_window(self, window: QWidget) -> tuple[tuple[QRect, bool], ...]:
-        rect = self._cell_rect_in(window)
-        return () if rect is None else ((rect, False),)
 
     def layout_watch_widgets(self) -> tuple[QWidget, ...]:
         widgets = [self.table, self.table.viewport()]
@@ -124,9 +123,6 @@ class StructuralWidgetTarget(StructuralFlashTarget):
     def scroll_rect_in(self, ancestor: QWidget) -> QRect | None:
         return _widget_rect_in(self.widget, ancestor)
 
-    def mask_rects_in_window(self, window: QWidget) -> tuple[tuple[QRect, bool], ...]:
-        return ((_widget_rect_in(self.widget, window), False),)
-
 
 @dataclass(frozen=True, slots=True)
 class StructuralWidgetSetTarget(StructuralFlashTarget):
@@ -140,7 +136,7 @@ class StructuralWidgetSetTarget(StructuralFlashTarget):
         manager.register_flash_masked_container(
             key,
             self.scroll_widget(),
-            self.mask_rects_in_window,
+            self.mask_paths_in_window,
             layout_watch_widgets=self.layout_watch_widgets(),
         )
 
@@ -160,14 +156,15 @@ class StructuralWidgetSetTarget(StructuralFlashTarget):
             target = target.united(rect)
         return target
 
-    def mask_rects_in_window(self, window: QWidget) -> tuple[tuple[QRect, bool], ...]:
+    def mask_paths_in_window(
+        self, window: QWidget, corner_radius: float = 0
+    ) -> tuple[QPainterPath, ...]:
         from pyqt_reactive.animation.flash_mixin import (
-            get_child_mask_rect,
-            needs_square_mask,
+            get_child_mask_path,
         )
 
         return tuple(
-            (get_child_mask_rect(widget, window), needs_square_mask(widget))
+            get_child_mask_path(widget, window, corner_radius)
             for widget in self.widgets
             if widget.isVisibleTo(window)
         )
@@ -186,7 +183,7 @@ class StructuralDescendantMaskTarget(StructuralFlashTarget):
         manager.register_flash_masked_container(
             key,
             self.container,
-            self.mask_rects_in_window,
+            self.mask_paths_in_window,
             layout_watch_widgets=self.layout_watch_widgets(),
         )
 
@@ -196,12 +193,14 @@ class StructuralDescendantMaskTarget(StructuralFlashTarget):
     def scroll_rect_in(self, ancestor: QWidget) -> QRect | None:
         return _widget_rect_in(self.container, ancestor)
 
-    def mask_rects_in_window(self, window: QWidget) -> tuple[tuple[QRect, bool], ...]:
+    def mask_paths_in_window(
+        self, window: QWidget, corner_radius: float = 0
+    ) -> tuple[QPainterPath, ...]:
         from pyqt_reactive.animation.flash_mixin import (
-            container_descendant_mask_rects,
+            container_descendant_mask_paths,
         )
 
-        return tuple(container_descendant_mask_rects(self.container, window))
+        return tuple(container_descendant_mask_paths(self.container, window, corner_radius))
 
     def layout_watch_widgets(self) -> tuple[QWidget, ...]:
         from pyqt_reactive.animation.flash_mixin import (
@@ -226,7 +225,7 @@ class StructuralMaskedContainerTarget(StructuralFlashTarget):
         manager.register_flash_masked_container(
             key,
             self.container,
-            self.mask_rects_in_window,
+            self.mask_paths_in_window,
             label_widget=self.label_widget,
             layout_watch_widgets=self.layout_watch_widgets(),
         )
@@ -237,12 +236,21 @@ class StructuralMaskedContainerTarget(StructuralFlashTarget):
     def scroll_rect_in(self, ancestor: QWidget) -> QRect | None:
         return (self.scroll_target or self.masked_target).scroll_rect_in(ancestor)
 
-    def mask_rects_in_window(self, window: QWidget) -> tuple[tuple[QRect, bool], ...]:
-        masks = list(self.masked_target.mask_rects_in_window(window))
+    def mask_paths_in_window(
+        self, window: QWidget, corner_radius: float = 0
+    ) -> tuple[QPainterPath, ...]:
+        from pyqt_reactive.animation.flash_mixin import (
+            LEAF_WIDGET_TYPES,
+            get_child_mask_path,
+            resolve_mask_widgets,
+        )
+
+        masks = list(self.masked_target.mask_paths_in_window(window, corner_radius))
         if self.label_widget is not None:
-            label_rect = _widget_rect_in(self.label_widget, window)
-            if label_rect.isValid() and not label_rect.isNull():
-                masks.append((label_rect, False))
+            masks.extend(
+                get_child_mask_path(widget, window, corner_radius)
+                for widget in resolve_mask_widgets(self.label_widget, LEAF_WIDGET_TYPES)
+            )
         return tuple(masks)
 
     def layout_watch_widgets(self) -> tuple[QWidget, ...]:
@@ -350,13 +358,9 @@ class IsomorphicDataclassRowPathPolicy:
     ) -> StructuralValuePath:
         row_fields = dataclass_fields(self.row_value_type)
         if column_index < 0 or column_index >= len(row_fields):
-            raise IndexError(
-                f"Column {column_index} is outside {self.row_value_type.__name__}."
-            )
+            raise IndexError(f"Column {column_index} is outside {self.row_value_type.__name__}.")
         return (
-            StructuralValuePath()
-            .child_index(row_index)
-            .child_field(row_fields[column_index].name)
+            StructuralValuePath().child_index(row_index).child_field(row_fields[column_index].name)
         )
 
 

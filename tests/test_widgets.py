@@ -2078,7 +2078,10 @@ def test_nested_reset_flash_masks_each_changed_input_widget(qapp) -> None:
             label = nested.labels[field_name]
             elements = overlay._elements[f"child.{field_name}"]
             assert len(elements) == 1
-            masks = [rect for rect, _ in elements[0].get_child_rects(host)]
+            masks = [
+                path.boundingRect().toAlignedRect()
+                for path in elements[0].get_child_paths(host)
+            ]
             assert get_child_mask_rect(widget, host) in masks
             assert all(
                 get_child_mask_rect(child, host) in masks
@@ -2194,7 +2197,7 @@ def test_widget_rect_flash_element_paints_visible_pixels_over_children(qapp) -> 
     assert overlay is not None
     element = create_widget_rect_element("section", section)
     overlay.register_element(element)
-    assert element.get_child_rects is None
+    assert element.get_child_paths is None
 
     table_center = table.mapTo(dialog, table.rect().center())
     rect = element.get_rect_in_window(dialog)
@@ -2409,8 +2412,8 @@ def test_full_groupbox_flash_uses_unmasked_visual_source(qapp) -> None:
     masked = create_groupbox_element("section", section)
     full = create_groupbox_element("section.enabled", section, use_full_rect=True)
 
-    assert masked.get_child_rects is not None
-    assert full.get_child_rects is None
+    assert masked.get_child_paths is not None
+    assert full.get_child_paths is None
     assert masked.source_id != full.source_id
     assert full.layout_watch_widgets == (section,)
 
@@ -2425,7 +2428,7 @@ def test_structural_masked_flash_invalidates_only_declared_geometry(qapp) -> Non
     from pyqt_reactive.animation.flash_mixin import (
         WindowFlashOverlay,
         create_structural_masked_container_element,
-        get_child_mask_rect,
+        get_child_mask_path,
     )
 
     dialog = QDialog()
@@ -2447,8 +2450,8 @@ def test_structural_masked_flash_invalidates_only_declared_geometry(qapp) -> Non
     for button in unrelated_buttons:
         button.setFixedSize(button.size())
 
-    def mask_rects(window):
-        return ((get_child_mask_rect(target_label, window), False),)
+    def mask_paths(window, corner_radius):
+        return (get_child_mask_path(target_label, window, corner_radius),)
 
     overlay = WindowFlashOverlay.get_for_window(section)
     assert overlay is not None
@@ -2456,7 +2459,7 @@ def test_structural_masked_flash_invalidates_only_declared_geometry(qapp) -> Non
         create_structural_masked_container_element(
             "section.enabled",
             section,
-            mask_rects,
+            mask_paths,
             layout_watch_widgets=(target_label,),
         )
     )
@@ -2876,7 +2879,9 @@ def test_geometry_rebuild_reuses_duplicate_visual_source(qapp) -> None:
     from PyQt6.QtCore import QRect
     from PyQt6.QtWidgets import QDialog, QVBoxLayout, QWidget
 
-    from pyqt_reactive.animation.flash_mixin import FlashElement, WindowFlashOverlay
+    from pyqt_reactive.animation.flash_mixin import (
+        FlashElement, WindowFlashOverlay, mask_path_from_rect,
+    )
 
     dialog = QDialog()
     dialog.resize(240, 160)
@@ -2897,16 +2902,16 @@ def test_geometry_rebuild_reuses_duplicate_visual_source(qapp) -> None:
     def rect_for_window(_window: QWidget) -> QRect:
         return QRect(20, 20, 100, 60)
 
-    def child_rects_for_window(_window: QWidget) -> list[tuple[QRect, bool]]:
+    def child_paths_for_window(_window: QWidget):
         nonlocal child_rect_calls
         child_rect_calls += 1
-        return [(QRect(30, 30, 20, 10), False)]
+        return [mask_path_from_rect(QRect(30, 30, 20, 10), 4)]
 
     overlay.register_element(
         FlashElement(
             key="field",
             get_rect_in_window=rect_for_window,
-            get_child_rects=child_rects_for_window,
+            get_child_paths=child_paths_for_window,
             source_id="shared-source",
             corner_radius=4,
         )
@@ -2915,7 +2920,7 @@ def test_geometry_rebuild_reuses_duplicate_visual_source(qapp) -> None:
         FlashElement(
             key="field.enabled",
             get_rect_in_window=rect_for_window,
-            get_child_rects=child_rects_for_window,
+            get_child_paths=child_paths_for_window,
             source_id="shared-source",
             corner_radius=4,
         )

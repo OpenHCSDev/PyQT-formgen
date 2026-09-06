@@ -6,13 +6,14 @@ import objectstate.config as config_module
 import pytest
 from objectstate import ObjectState, ObjectStateRegistry, set_base_config_type
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QPainterPath
 from PyQt6.QtWidgets import QDialog, QLabel, QVBoxLayout
 
 from pyqt_reactive.animation.flash_mixin import (
     LEAF_WIDGET_TYPES,
     WindowFlashOverlay,
     _GlobalFlashCoordinator,
+    get_child_mask_path,
     get_child_mask_rect,
     resolve_mask_widgets,
 )
@@ -88,6 +89,7 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(
     qapp.processEvents()
     rect = label.rect().translated(label.mapTo(host, QPoint()))
     mask = get_child_mask_rect(label, host)
+    mask_path = get_child_mask_path(label, host)
     assert mask.width() < rect.width()
     assert mask.height() < rect.height()
     contents = label.contentsRect().translated(label.mapTo(host, QPoint()))
@@ -96,14 +98,20 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(
     image = label.grab().toImage()
     ratio = image.devicePixelRatio()
     text_pixels = [
-        QPoint(int(x / ratio), int(y / ratio))
+        QPointF((x + 0.5) / ratio, (y + 0.5) / ratio)
         for y in range(image.height())
         for x in range(image.width())
         if max(image.pixelColor(x, y).getRgb()[:3]) > 20 and image.pixelColor(x, y).alpha() > 0
     ]
     assert text_pixels
-    outside = [point for point in text_pixels if not mask.contains(label.mapTo(host, point))]
+    origin = QPointF(label.mapTo(host, QPoint()))
+    outside = [point for point in text_pixels if not mask_path.contains(point + origin)]
     assert not outside, (mask, contents, outside[:10])
+    assert any(
+        not mask_path.contains(QPointF(x + 0.5, y + 0.5))
+        for y in range(mask.top(), mask.bottom() + 1)
+        for x in range(mask.left(), mask.right() + 1)
+    ), "Native envelope must not collapse back into a bounding rectangle"
 
 
 @pytest.mark.parametrize("fields", [("alpha",), ("alpha", "beta")])
@@ -134,13 +142,8 @@ def test_nested_flash_paint_has_opaque_context_and_complete_clear_holes(nested_f
             indicator.mapTo(host, QPoint())
         )
         for widget in (*labels, manager.widgets[name]):
-            rect = get_child_mask_rect(widget, host)
-            for point in (
-                rect.center(),
-                rect.topLeft() + QPoint(1, 1),
-                rect.bottomRight() - QPoint(1, 1),
-            ):
-                assert not record.path.contains(QPointF(point))
+            mask_path = get_child_mask_path(widget, host)
+            assert record.path.intersected(mask_path).simplified().isEmpty()
 
     image = overlay.grab().toImage()
     ratio = image.devicePixelRatio()
@@ -198,3 +201,23 @@ def test_materialized_leaf_retires_its_lazy_container_mask(nested_form, qapp):
     records, _ = overlay._visible_paint_records({"child.alpha"})
     sibling = manager.widgets["beta"]
     assert records[0].path.contains(QPointF(sibling.mapTo(host, sibling.rect().center())))
+
+
+def test_geometry_signature_retains_shape_changes_with_equal_bounds(nested_form, monkeypatch):
+    """A path cache must observe shape changes even when layout bounds stay equal."""
+    from pyqt_reactive.animation import flash_mixin
+
+    host, manager = nested_form
+    label = manager.labels["alpha"].findChild(QLabel)
+    rectangle = QPainterPath()
+    rectangle.addRect(0, 0, 20, 20)
+    triangle = QPainterPath()
+    triangle.moveTo(0, 0)
+    triangle.lineTo(20, 20)
+    triangle.lineTo(0, 20)
+    triangle.closeSubpath()
+    assert rectangle.boundingRect() == triangle.boundingRect()
+    monkeypatch.setattr(flash_mixin, "get_child_mask_path", lambda *_: rectangle)
+    previous = WindowFlashOverlay._geometry_signature(label)
+    monkeypatch.setattr(flash_mixin, "get_child_mask_path", lambda *_: triangle)
+    assert WindowFlashOverlay._geometry_signature(label) != previous
