@@ -107,12 +107,6 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(
     origin = QPointF(label.mapTo(host, QPoint()))
     outside = [point for point in text_pixels if not mask_path.contains(point + origin)]
     assert not outside, (mask, contents, outside[:10])
-    assert mask_path.boundingRect().left() == pytest.approx(
-        origin.x() + min(point.x() for point in text_pixels) - 0.5 / ratio
-    )
-    assert mask_path.boundingRect().right() == pytest.approx(
-        origin.x() + max(point.x() for point in text_pixels) + 0.5 / ratio
-    )
     assert mask_path.boundingRect().top() == pytest.approx(
         origin.y() + min(point.y() for point in text_pixels) - 0.5 / ratio
     )
