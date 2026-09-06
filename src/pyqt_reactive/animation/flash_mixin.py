@@ -552,24 +552,28 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
         coverage = QImage(
             ceil(widget.width() * device_ratio),
             ceil(widget.height() * device_ratio),
-            QImage.Format.Format_ARGB32_Premultiplied,
+            QImage.Format.Format_RGB32,
         )
         coverage.setDevicePixelRatio(device_ratio)
         coverage.setDotsPerMeterX(round(widget.logicalDpiX() / 0.0254))
         coverage.setDotsPerMeterY(round(widget.logicalDpiY() / 0.0254))
-        coverage.fill(Qt.GlobalColor.transparent)
+        # Opaque paint targets preserve native LCD/subpixel antialiasing;
+        # transparent targets use grayscale and lose faint edge coverage.
+        coverage.fill(Qt.GlobalColor.black)
+        palette = widget.palette()
+        palette.setColor(widget.foregroundRole(), Qt.GlobalColor.white)
         flags = alignment.value
         if widget.wordWrap():
             flags |= Qt.TextFlag.TextWordWrap.value
         painter = QPainter(coverage)
         painter.setFont(widget.font())
         widget.style().drawItemText(
-            painter, contents, flags, widget.palette(), widget.isEnabled(),
+            painter, contents, flags, palette, widget.isEnabled(),
             widget.text(), widget.foregroundRole(),
         )
         painter.end()
         pixels = QRegion(QBitmap.fromImage(
-            coverage.createMaskFromColor(0, Qt.MaskMode.MaskInColor)
+            coverage.createMaskFromColor(QColor(Qt.GlobalColor.black).rgba(), Qt.MaskMode.MaskInColor)
         )).boundingRect()
         logical_pixels = QTransform.fromScale(1 / device_ratio, 1 / device_ratio)
         return logical_pixels.mapRect(QRectF(pixels)).toAlignedRect().translated(widget_window)
