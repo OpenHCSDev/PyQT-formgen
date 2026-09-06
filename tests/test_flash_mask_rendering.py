@@ -95,8 +95,7 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(
         QPoint(int(x / ratio), int(y / ratio))
         for y in range(image.height())
         for x in range(image.width())
-        if max(image.pixelColor(x, y).getRgb()[:3]) > 20
-        and image.pixelColor(x, y).alpha() > 0
+        if max(image.pixelColor(x, y).getRgb()[:3]) > 20 and image.pixelColor(x, y).alpha() > 0
     ]
     assert text_pixels
     outside = [point for point in text_pixels if not mask.contains(label.mapTo(host, point))]
