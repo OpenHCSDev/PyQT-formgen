@@ -110,7 +110,9 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(
     assert text_pixels
     origin = QPointF(label.mapTo(host, QPoint()))
     outside = [point for point in text_pixels if not mask_path.contains(point + origin)]
-    artifact = Path(os.environ.get("RASTER_DIAGNOSTICS_DIR", "raster-diagnostics")) / sha256(request.node.callspec.id.encode()).hexdigest()[:16]
+    artifact = Path(os.environ.get("RASTER_DIAGNOSTICS_DIR", "raster-diagnostics")) / sha256(
+        request.node.callspec.id.encode()
+    ).hexdigest()[:16]
     artifact.mkdir(parents=True, exist_ok=True)
     image.save(str(artifact / "native.png"))
     mask_image = QImage(image.size(), QImage.Format.Format_RGB32)
@@ -177,7 +179,8 @@ def test_native_label_capture_preserves_source_and_releases_temporary_children(n
     before = (label.text(), label.font(), label.styleSheet(), label.geometry(), label.children())
     for _ in range(3):
         assert not get_child_mask_path(label, host).isEmpty()
-    assert (label.text(), label.font(), label.styleSheet(), label.geometry(), label.children()) == before
+    after = (label.text(), label.font(), label.styleSheet(), label.geometry(), label.children())
+    assert after == before
 
 
 @pytest.mark.parametrize("fields", [("alpha",), ("alpha", "beta")])

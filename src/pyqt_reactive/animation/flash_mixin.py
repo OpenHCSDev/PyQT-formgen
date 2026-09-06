@@ -513,7 +513,7 @@ class NativeLabelCoverageSurface(QWidget):
         self._source = source
         self.resize(source.size())
 
-    def paintEvent(self, event):
+    def paintEvent(self, event):  # noqa: N802 - Qt virtual method name
         widget = self._source
         margin = widget.margin()
         contents = widget.contentsRect().adjusted(margin, margin, -margin, -margin)
@@ -604,11 +604,11 @@ def get_child_mask_path(
         # winding direction while retaining the native exterior raster edge.
         contours = QPainterPath()
         contours.addRegion(pixels)
-        path = QPainterPath()
+        filled = QRegion()
         for polygon in contours.simplified().toSubpathPolygons():
-            contour = QPainterPath()
-            contour.addPolygon(polygon)
-            path = path.united(contour)
+            filled = filled.united(QRegion(polygon.toPolygon(), Qt.FillRule.WindingFill))
+        path = QPainterPath()
+        path.addRegion(filled)
         logical_pixels = QTransform.fromScale(1 / device_ratio, 1 / device_ratio)
         return logical_pixels.map(path).translated(widget_window.x(), widget_window.y())
     return mask_path_from_rect(widget.rect().translated(widget_window), corner_radius)
