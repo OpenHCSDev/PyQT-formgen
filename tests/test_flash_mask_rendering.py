@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 import json
+import os
 from hashlib import sha256
 from pathlib import Path
 
@@ -109,7 +110,7 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(
     assert text_pixels
     origin = QPointF(label.mapTo(host, QPoint()))
     outside = [point for point in text_pixels if not mask_path.contains(point + origin)]
-    artifact = Path("raster-diagnostics") / sha256(request.node.callspec.id.encode()).hexdigest()[:16]
+    artifact = Path(os.environ.get("RASTER_DIAGNOSTICS_DIR", "raster-diagnostics")) / sha256(request.node.callspec.id.encode()).hexdigest()[:16]
     artifact.mkdir(parents=True, exist_ok=True)
     image.save(str(artifact / "native.png"))
     mask_image = QImage(image.size(), QImage.Format.Format_RGB32)
