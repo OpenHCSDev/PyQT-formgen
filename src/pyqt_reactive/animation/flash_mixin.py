@@ -593,10 +593,9 @@ def get_child_mask_path(
         ))
         if pixels.isEmpty():
             return QPainterPath()
-        # Native backing-store LCD filters can extend coverage into the adjacent
-        # device pixel. Preserve that raster fringe, not a logical UI padding.
+        # Native backing-store LCD filtering extends the horizontal raster edge.
+        # Preserve that device-pixel fringe; vertical extents remain native.
         pixels = pixels.united(pixels.translated(-1, 0)).united(pixels.translated(1, 0))
-        pixels = pixels.united(pixels.translated(0, -1)).united(pixels.translated(0, 1))
         pixels = pixels.intersected(QRegion(coverage.rect()))
         # Preserve each native contour's backing, including enclosed letter
         # counters, without joining unrelated glyphs or bridging word spaces.

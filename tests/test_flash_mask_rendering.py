@@ -107,6 +107,12 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(
     origin = QPointF(label.mapTo(host, QPoint()))
     outside = [point for point in text_pixels if not mask_path.contains(point + origin)]
     assert not outside, (mask, contents, outside[:10])
+    assert mask_path.boundingRect().top() == pytest.approx(
+        origin.y() + min(point.y() for point in text_pixels) - 0.5 / ratio
+    )
+    assert mask_path.boundingRect().bottom() == pytest.approx(
+        origin.y() + max(point.y() for point in text_pixels) + 0.5 / ratio
+    )
     assert any(
         not mask_path.contains(QPointF(x + 0.5, y + 0.5))
         for y in range(mask.top(), mask.bottom() + 1)
@@ -153,7 +159,7 @@ def test_nested_flash_paint_has_opaque_context_and_complete_clear_holes(nested_f
     record = records[0]
     assert record.color.alpha() == 255
     title = overlay._elements["child.alpha"][0].container._title_label
-    assert not record.path.contains(QPointF(get_child_mask_rect(title, host).center()))
+    assert record.path.intersected(get_child_mask_path(title, host)).simplified().isEmpty()
     for name in fields:
         labels = resolve_mask_widgets(manager.labels[name], LEAF_WIDGET_TYPES)
         indicator = manager.labels[name].findChild(HelpIndicator)
