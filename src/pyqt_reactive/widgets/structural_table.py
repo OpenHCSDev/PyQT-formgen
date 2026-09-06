@@ -163,11 +163,11 @@ class StructuralWidgetSetTarget(StructuralFlashTarget):
     def mask_rects_in_window(self, window: QWidget) -> tuple[tuple[QRect, bool], ...]:
         from pyqt_reactive.animation.flash_mixin import (
             get_child_mask_rect,
-            needs_square_checkbox_mask,
+            needs_square_mask,
         )
 
         return tuple(
-            (get_child_mask_rect(widget, window), needs_square_checkbox_mask(widget))
+            (get_child_mask_rect(widget, window), needs_square_mask(widget))
             for widget in self.widgets
             if widget.isVisibleTo(window)
         )

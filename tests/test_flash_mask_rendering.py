@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass, field
 
+import objectstate.config as config_module
 import pytest
 from objectstate import ObjectState, ObjectStateRegistry, set_base_config_type
-from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QDialog, QLabel, QVBoxLayout
 
@@ -34,6 +35,7 @@ def nested_form(qapp):
     class Root:
         child: Child = field(default_factory=Child)
 
+    previous_base = config_module._base_config_type
     set_base_config_type(Root)
     ObjectStateRegistry.clear()
     host = QDialog()
@@ -56,15 +58,24 @@ def nested_form(qapp):
     WindowFlashOverlay.cleanup_window(host)
     host.close()
     host.deleteLater()
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
     ObjectStateRegistry.clear()
+    config_module._base_config_type = previous_base
 
 
 @pytest.mark.parametrize("text", ["Alpha:", "A longer parameter label:"])
 @pytest.mark.parametrize("width", [100, 220])
-def test_label_mask_is_tight_and_respects_alignment_and_style(nested_form, qapp, text, width):
+@pytest.mark.parametrize("underline", [False, True])
+def test_label_mask_is_tight_and_respects_alignment_and_style(
+    nested_form, qapp, text, width, underline
+):
     host, manager = nested_form
     label = manager.labels["alpha"].findChild(QLabel)
     label.setText(text)
+    font = label.font()
+    font.setUnderline(underline)
+    label.setFont(font)
     label.setWordWrap(True)
     label.setFixedSize(width, 72)
     manager.labels["alpha"].setMinimumSize(width + 40, 80)
@@ -84,10 +95,8 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(nested_form, qapp,
         QPoint(int(x / ratio), int(y / ratio))
         for y in range(image.height())
         for x in range(image.width())
-        if image.pixelColor(x, y).red() > 200
-        and image.pixelColor(x, y).green() > 200
-        and image.pixelColor(x, y).blue() > 200
-        and image.pixelColor(x, y).alpha() > 200
+        if max(image.pixelColor(x, y).getRgb()[:3]) > 20
+        and image.pixelColor(x, y).alpha() > 0
     ]
     assert text_pixels
     outside = [point for point in text_pixels if not mask.contains(label.mapTo(host, point))]

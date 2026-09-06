@@ -89,7 +89,8 @@ Flash animations use widget-type-specific masking strategies for precise visual 
 **Masking Strategies**:
 
 - **Checkbox**: Tight mask for indicator + label text using Qt style subelement rects
-- **Labels**: Native Qt text bounds, including alignment, font and contents margins
+- **Labels**: Native text layout with tight glyph-height bounds, preserving
+  underlines, alignment, font, indentation and contents margins
 - **Other controls**: Full laid-out widget geometry
 - **Changed fields**: Complete inputs and individual label/help controls remain clear
 
@@ -97,14 +98,10 @@ Custom controls declare ``FlashMaskRectProvider`` when their painted extent
 differs from their native Qt base. ``HelpIndicator`` preserves its complete
 styled icon rectangle, even though its Qt base is a label.
 
-**Checkbox Square Cutout**:
+**Square Cutouts**:
 
-Textless checkboxes (no label) use square cutouts to avoid rounding:
-
-.. code-block:: python
-
-    def _needs_square_checkbox_mask(widget: QWidget) -> bool:
-        return isinstance(widget, QCheckBox) and not widget.text()
+``needs_square_mask`` preserves text bounds and textless checkbox indicators
+without rounding their corners. Other control cutouts retain rounded corners.
 
 **Function Pane Title Masking**:
 

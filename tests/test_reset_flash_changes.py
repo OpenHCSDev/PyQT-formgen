@@ -6,6 +6,7 @@ import objectstate.config as config_module
 import pytest
 from objectstate import ObjectState, ObjectStateRegistry, set_base_config_type
 from objectstate.lazy_factory import LazyDataclassFactory
+from PyQt6.QtCore import QEvent
 from PyQt6.QtWidgets import QDialog, QVBoxLayout
 
 from pyqt_reactive.animation.flash_mixin import WindowFlashOverlay
@@ -70,6 +71,7 @@ def form(qapp, request):
         host.close()
         manager.deleteLater()
         host.deleteLater()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         _flush(qapp)
         ObjectStateRegistry.clear()
         config_module._base_config_type = previous_base

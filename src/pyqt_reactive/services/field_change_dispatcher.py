@@ -142,7 +142,6 @@ class SourceStateUpdateStage:
                 )
         context.source.sync_after_model_field_change(
             context.event.field_name,
-            context.source_path,
             changed_paths=changed_paths,
         )
         if DEBUG_DISPATCHER:

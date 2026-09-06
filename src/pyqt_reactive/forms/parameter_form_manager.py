@@ -932,7 +932,6 @@ class ParameterFormManager(
     def sync_after_model_field_change(
         self,
         param_name: str,
-        full_path: str,
         *,
         changed_paths: Set[str] | None = None,
     ) -> None:

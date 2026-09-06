@@ -68,7 +68,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget,
     QWidget,
 )
-from PyQt6.QtGui import QColor, QPainter, QRegion, QPainterPath
+from PyQt6.QtGui import QColor, QFontMetricsF, QPainter, QRegion, QPainterPath
 from PyQt6 import sip
 
 from objectstate.time_travel_profile import TimeTravelProfiler
@@ -543,6 +543,16 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
         rect = widget.style().itemTextRect(
             widget.fontMetrics(), contents, flags, widget.isEnabled(), widget.text()
         )
+        metrics = QFontMetricsF(widget.font(), widget)
+        ink = metrics.tightBoundingRect(widget.text())
+        if widget.font().underline():
+            ink.setBottom(max(ink.bottom(), metrics.underlinePos() + metrics.lineWidth()))
+        rect = QRectF(
+            rect.left(),
+            rect.top() + metrics.ascent() + ink.top(),
+            rect.width(),
+            rect.height() - metrics.height() + ink.height(),
+        ).toAlignedRect()
         return rect.translated(widget_window)
     return widget.rect().translated(widget_window)
 
@@ -586,13 +596,11 @@ def _unique_live_widgets(widgets: Iterable[Optional[QWidget]]) -> Tuple[QWidget,
     return tuple(unique_widgets)
 
 
-def needs_square_checkbox_mask(widget: QWidget) -> bool:
-    """Return True when a checkbox should use square cutout.
-
-    Textless checkboxes (no label) use square cutouts to avoid rounding the box.
-    Checkboxes with labels are rounded like other widgets.
-    """
-    return isinstance(widget, QCheckBox) and not widget.text()
+def needs_square_mask(widget: QWidget) -> bool:
+    """Preserve tight text bounds and checkbox indicators without clipped corners."""
+    return isinstance(widget, QLabel) or (
+        isinstance(widget, QCheckBox) and not widget.text()
+    )
 
 
 def _unmasked_groupbox_widgets(groupbox: QWidget) -> set[QWidget]:
@@ -636,7 +644,7 @@ def container_descendant_mask_rects(container: QWidget, window: QWidget) -> List
         if sip.isdeleted(child) or not child.isVisibleTo(container):
             continue
         child_rect = get_child_mask_rect(child, window)
-        child_rects.append((child_rect, needs_square_checkbox_mask(child)))
+        child_rects.append((child_rect, needs_square_mask(child)))
     child_rects.extend(_get_groupbox_title_mask_rects(container, window))
     return child_rects
 
@@ -932,7 +940,7 @@ def create_groupbox_element(
                             if child_y < title_y_max:
                                 child_rect = get_child_mask_rect(child, window)
                                 logger.debug(f"[FLASH INVERSE] Added title row exclusion: {child_rect}")
-                                exclusions.append((child_rect, needs_square_checkbox_mask(child)))
+                                exclusions.append((child_rect, needs_square_mask(child)))
                         except Exception as e:
                             logger.warning(f"[FLASH INVERSE] Failed to mask title child {type(child).__name__}: {e}")
                             pass
@@ -941,7 +949,7 @@ def create_groupbox_element(
                 for title_widget in _get_function_pane_title_widgets(groupbox):
                     try:
                         title_rect = get_child_mask_rect(title_widget, window)
-                        exclusions.append((title_rect, needs_square_checkbox_mask(title_widget)))
+                        exclusions.append((title_rect, needs_square_mask(title_widget)))
                     except Exception as e:
                         logger.warning(f"[FLASH INVERSE] Failed to mask function pane title widget: {e}")
 
@@ -977,7 +985,7 @@ def create_groupbox_element(
             if sip.isdeleted(child) or not child.isVisibleTo(groupbox):
                 continue
             child_rect = get_child_mask_rect(child, window)
-            child_rects.append((child_rect, needs_square_checkbox_mask(child)))
+            child_rects.append((child_rect, needs_square_mask(child)))
 
         child_rects.extend(_get_groupbox_title_mask_rects(groupbox, window))
 
