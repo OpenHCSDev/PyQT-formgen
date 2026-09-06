@@ -573,8 +573,15 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
         )
         painter.end()
         pixels = QRegion(QBitmap.fromImage(
-            coverage.createMaskFromColor(QColor(Qt.GlobalColor.black).rgba(), Qt.MaskMode.MaskInColor)
+            coverage.createMaskFromColor(
+                QColor(Qt.GlobalColor.black).rgba(), Qt.MaskMode.MaskInColor
+            )
         )).boundingRect()
+        if pixels.isEmpty():
+            return QRect()
+        # Native backing-store LCD filters can extend coverage into the adjacent
+        # device pixel. Preserve that raster fringe, not a logical UI padding.
+        pixels = pixels.adjusted(-1, -1, 1, 1).intersected(coverage.rect())
         logical_pixels = QTransform.fromScale(1 / device_ratio, 1 / device_ratio)
         return logical_pixels.mapRect(QRectF(pixels)).toAlignedRect().translated(widget_window)
     return widget.rect().translated(widget_window)
