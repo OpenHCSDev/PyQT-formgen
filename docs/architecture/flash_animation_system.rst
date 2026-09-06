@@ -89,7 +89,7 @@ Flash animations use widget-type-specific masking strategies for precise visual 
 **Masking Strategies**:
 
 - **Checkbox**: Tight mask for indicator + label text using Qt style subelement rects
-- **Labels**: Native painted scanline envelopes at the current device scale, preserving
+- **Labels**: Native painted contours at the current device scale, preserving
   underlines, alignment, font, indentation and contents margins
 - **Other controls**: Full laid-out widget geometry
 - **Changed fields**: Complete inputs and individual label/help controls remain clear
@@ -105,10 +105,11 @@ exclusions. The overlay subtracts these paths without interpreting widget types
 or square/rounded flags. ``get_child_mask_path`` derives native control geometry;
 ``get_child_mask_rect`` projects its bounds for layout and scrolling.
 
-Label masks follow each painted scanline's extent, retaining a solid contrasting
-backdrop within the text while leaving unused corners and inter-line gaps clear.
-The geometry includes the native device-pixel antialiasing fringe. Input and help
-controls retain their complete declared shape.
+Label masks follow native exterior text contours, retaining a solid contrasting
+backdrop inside letters while leaving word spaces and inter-line gaps clear.
+Qt derives the contours from the native raster, including underlines and the
+device-pixel antialiasing fringe. Input and help controls retain their complete
+declared shape.
 
 **Function Pane Title Masking**:
 

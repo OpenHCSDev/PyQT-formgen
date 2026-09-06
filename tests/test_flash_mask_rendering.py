@@ -111,7 +111,27 @@ def test_label_mask_is_tight_and_respects_alignment_and_style(
         not mask_path.contains(QPointF(x + 0.5, y + 0.5))
         for y in range(mask.top(), mask.bottom() + 1)
         for x in range(mask.left(), mask.right() + 1)
-    ), "Native envelope must not collapse back into a bounding rectangle"
+    ), "Native contours must not collapse back into a bounding rectangle"
+
+
+def test_label_mask_preserves_letter_interiors_without_bridging_word_spaces(nested_form, qapp):
+    host, manager = nested_form
+    label = manager.labels["alpha"].findChild(QLabel)
+    label.setText("O     O")
+    font = label.font()
+    font.setPointSize(32)
+    font.setUnderline(False)
+    label.setFont(font)
+    label.setFixedSize(240, 80)
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    qapp.processEvents()
+
+    path = get_child_mask_path(label, host)
+    contours = path.simplified().toSubpathPolygons()
+    assert len(contours) == 2
+    centers = sorted((polygon.boundingRect().center() for polygon in contours), key=lambda p: p.x())
+    assert all(path.contains(center) for center in centers), "Letter counters need dark backing"
+    assert not path.contains((centers[0] + centers[1]) / 2), "Word spaces must remain unmasked"
 
 
 @pytest.mark.parametrize("fields", [("alpha",), ("alpha", "beta")])

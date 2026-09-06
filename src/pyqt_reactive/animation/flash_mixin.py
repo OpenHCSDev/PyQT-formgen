@@ -598,14 +598,17 @@ def get_child_mask_path(
         pixels = pixels.united(pixels.translated(-1, 0)).united(pixels.translated(1, 0))
         pixels = pixels.united(pixels.translated(0, -1)).united(pixels.translated(0, 1))
         pixels = pixels.intersected(QRegion(coverage.rect()))
-        # A native scanline envelope retains a solid contrasting backdrop behind
-        # text without masking the unused corners or gaps between wrapped lines.
+        # Preserve each native contour's backing, including enclosed letter
+        # counters, without joining unrelated glyphs or bridging word spaces.
+        # Qt supplies the contours; their union fills counters independently of
+        # winding direction while retaining the native exterior raster edge.
+        contours = QPainterPath()
+        contours.addRegion(pixels)
         path = QPainterPath()
-        bounds = pixels.boundingRect()
-        for y in range(bounds.top(), bounds.bottom() + 1):
-            row = pixels.intersected(QRegion(QRect(bounds.left(), y, bounds.width(), 1)))
-            if not row.isEmpty():
-                path.addRect(QRectF(row.boundingRect()))
+        for polygon in contours.simplified().toSubpathPolygons():
+            contour = QPainterPath()
+            contour.addPolygon(polygon)
+            path = path.united(contour)
         logical_pixels = QTransform.fromScale(1 / device_ratio, 1 / device_ratio)
         return logical_pixels.map(path).translated(widget_window.x(), widget_window.y())
     return mask_path_from_rect(widget.rect().translated(widget_window), corner_radius)
