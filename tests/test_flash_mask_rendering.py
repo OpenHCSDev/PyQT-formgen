@@ -67,18 +67,22 @@ def nested_form(qapp):
 @pytest.mark.parametrize("text", ["Alpha:", "A longer parameter label:"])
 @pytest.mark.parametrize("width", [100, 220])
 @pytest.mark.parametrize("underline", [False, True])
+@pytest.mark.parametrize("point_size", [9, 12])
+@pytest.mark.parametrize("italic", [False, True])
 def test_label_mask_is_tight_and_respects_alignment_and_style(
-    nested_form, qapp, text, width, underline
+    nested_form, qapp, text, width, underline, point_size, italic
 ):
     host, manager = nested_form
     label = manager.labels["alpha"].findChild(QLabel)
     label.setText(text)
     font = label.font()
     font.setUnderline(underline)
+    font.setPointSize(point_size)
+    font.setItalic(italic)
     label.setFont(font)
     label.setWordWrap(True)
-    label.setFixedSize(width, 72)
-    manager.labels["alpha"].setMinimumSize(width + 40, 80)
+    label.setFixedSize(width, 112)
+    manager.labels["alpha"].setMinimumSize(width + 40, 120)
     label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
     label.setStyleSheet("color: white; background: #141414; padding: 4px; margin: 2px;")
     qapp.processEvents()

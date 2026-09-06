@@ -89,7 +89,7 @@ Flash animations use widget-type-specific masking strategies for precise visual 
 **Masking Strategies**:
 
 - **Checkbox**: Tight mask for indicator + label text using Qt style subelement rects
-- **Labels**: Native text layout with tight glyph-height bounds, preserving
+- **Labels**: Native shaped glyph bounds at the current device scale, preserving
   underlines, alignment, font, indentation and contents margins
 - **Other controls**: Full laid-out widget geometry
 - **Changed fields**: Complete inputs and individual label/help controls remain clear

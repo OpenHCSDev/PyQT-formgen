@@ -32,6 +32,7 @@ import logging
 import time
 from dataclasses import dataclass, field, replace
 from functools import partial
+from math import ceil
 from typing import Dict, Iterable, List, Optional, Set, Callable, Any, Tuple, TYPE_CHECKING
 import re
 from objectstate import DottedFieldPath
@@ -39,6 +40,7 @@ from pyqt_reactive.protocols.widget_protocols import FlashMaskRectProvider
 from PyQt6.QtCore import (
     QCoreApplication,
     QObject,
+    QPointF,
     QThread,
     QTimer,
     Qt,
@@ -68,7 +70,16 @@ from PyQt6.QtWidgets import (
     QTreeWidget,
     QWidget,
 )
-from PyQt6.QtGui import QColor, QFontMetricsF, QPainter, QRegion, QPainterPath
+from PyQt6.QtGui import (
+    QColor,
+    QFontMetricsF,
+    QPainter,
+    QPainterPath,
+    QRegion,
+    QTextLayout,
+    QTextOption,
+    QTransform,
+)
 from PyQt6 import sip
 
 from objectstate.time_travel_profile import TimeTravelProfiler
@@ -530,30 +541,69 @@ def get_child_mask_rect(widget: QWidget, window: QWidget) -> QRect:
             indent = widget.fontMetrics().horizontalAdvance("x") // 2 - margin
         indent = max(0, indent)
         # QLabel's document rectangle includes alignment-dependent indentation;
-        # QStyle.itemTextRect alone does not account for this native QLabel rule.
+        # Font layout bounds alone do not include this native QLabel rule.
         contents.adjust(
             indent * bool(alignment & Qt.AlignmentFlag.AlignLeft),
             indent * bool(alignment & Qt.AlignmentFlag.AlignTop),
             -indent * bool(alignment & Qt.AlignmentFlag.AlignRight),
             -indent * bool(alignment & Qt.AlignmentFlag.AlignBottom),
         )
-        flags = alignment.value
-        if widget.wordWrap():
-            flags |= Qt.TextFlag.TextWordWrap.value
-        rect = widget.style().itemTextRect(
-            widget.fontMetrics(), contents, flags, widget.isEnabled(), widget.text()
-        )
         metrics = QFontMetricsF(widget.font(), widget)
-        ink = metrics.tightBoundingRect(widget.text())
-        if widget.font().underline():
-            ink.setBottom(max(ink.bottom(), metrics.underlinePos() + metrics.lineWidth()))
-        rect = QRectF(
-            rect.left(),
-            rect.top() + metrics.ascent() + ink.top(),
-            rect.width(),
-            rect.height() - metrics.height() + ink.height(),
-        ).toAlignedRect()
-        return rect.translated(widget_window)
+        # Shaped glyphs own actual ink placement. Aggregate font text bounds
+        # align natural widths differently from wrapped/italic glyph advances.
+        layout = QTextLayout(widget.text().replace("\n", "\u2028"), widget.font(), widget)
+        option = QTextOption(alignment)
+        option.setTextDirection(widget.layoutDirection())
+        option.setWrapMode(
+            QTextOption.WrapMode.WordWrap
+            if widget.wordWrap()
+            else QTextOption.WrapMode.NoWrap
+        )
+        layout.setTextOption(option)
+        layout.beginLayout()
+        height = -metrics.leading()
+        while (line := layout.createLine()).isValid():
+            line.setLineWidth(contents.width())
+            height = ceil(height + metrics.leading())
+            line.setPosition(QPointF(0, height))
+            # QTextLine.height() rounds up; QLabel aligns the final line using
+            # the underlying fractional ascent/descent before device rounding.
+            height += line.ascent() + line.descent()
+        layout.endLayout()
+
+        ink = QRectF()
+        device_ratio = widget.devicePixelRatioF()
+        logical_pixels = QTransform.fromScale(1 / device_ratio, 1 / device_ratio)
+        for line_index in range(layout.lineCount()):
+            line = layout.lineAt(line_index)
+            for run in line.glyphRuns():
+                font = run.rawFont()
+                font.setPixelSize(font.pixelSize() * device_ratio)
+                for glyph, position in zip(run.glyphIndexes(), run.positions()):
+                    ink = ink.united(
+                        logical_pixels.mapRect(font.boundingRect(glyph)).translated(position)
+                    )
+            if widget.font().underline():
+                thickness = max(1, widget.fontMetrics().lineWidth())
+                underline_top = min(
+                    ceil(metrics.underlinePos()), metrics.descent() - thickness
+                )
+                ink = ink.united(
+                    QRectF(
+                        line.naturalTextRect().left(),
+                        line.y() + line.ascent() + underline_top,
+                        line.horizontalAdvance(),
+                        thickness,
+                    )
+                )
+        vertical_alignment = (
+            bool(alignment & Qt.AlignmentFlag.AlignBottom)
+            + 0.5 * bool(alignment & Qt.AlignmentFlag.AlignVCenter)
+        )
+        ink.translate(
+            contents.x(), contents.y() + (contents.height() - height) * vertical_alignment
+        )
+        return ink.toAlignedRect().translated(widget_window)
     return widget.rect().translated(widget_window)
 
 
