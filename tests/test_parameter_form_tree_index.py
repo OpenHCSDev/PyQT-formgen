@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from objectstate import DottedFieldPath
 from pyqt_reactive.forms.parameter_form_tree_index import ParameterFormTreeIndex
 from pyqt_reactive.forms.parameter_form_chrome_sync import ParameterFormChromeSync
+from pyqt_reactive.protocols.widget_protocols import ChildFieldChromeRefreshable
 
 
 @dataclass
@@ -34,6 +35,20 @@ class RecordingChromeSync:
 
     def refresh_widgets_for_paths(self, paths: set[str]) -> None:
         self.calls.append(set(paths))
+
+
+def test_empty_child_delta_does_not_refresh_compound_chrome() -> None:
+    class RecordingChildChrome(ChildFieldChromeRefreshable):
+        def refresh_child_field_chrome(self, owner_field_paths=None):
+            calls.append(owner_field_paths)
+
+    calls = []
+    sync = ParameterFormChromeSync(FakeManager(""))
+    widget = RecordingChildChrome()
+    sync._refresh_compound_widget_semantics(widget, ())
+    assert calls == []
+    sync._refresh_compound_widget_semantics(widget, None)
+    assert calls == [None]
 
 
 def _manager_tree() -> tuple[ParameterFormTreeIndex, FakeManager, FakeManager, FakeManager]:

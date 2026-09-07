@@ -159,6 +159,9 @@ class ParameterFormChromeSync:
         widget,
         child_owner_paths: tuple[DottedFieldPath, ...] | None,
     ) -> None:
+        if child_owner_paths == ():
+            return
+
         from pyqt_reactive.protocols.widget_protocols import (
             ChildFieldChromeRefreshable,
             ChildFieldSemanticChromeRefreshable,
