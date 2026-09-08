@@ -102,7 +102,7 @@ class EditableFunctionPatternCallable:
         self.__wrapped__ = authority
         self.__annotations__ = self._annotations(authority, kwargs or {})
         self.__signature__ = self._signature(authority, kwargs or {})
-        hidden = parameter_exclusions(authority)
+        hidden = parameter_exclusions(authority).difference(kwargs or ())
         if hidden:
             set_parameter_exclusions(self, hidden)
 
@@ -122,7 +122,9 @@ class EditableFunctionPatternCallable:
             signature = inspect.signature(func)
         except (TypeError, ValueError):
             return func
-        if all(name in signature.parameters for name in kwargs):
+        if all(name in signature.parameters for name in kwargs) and not parameter_exclusions(
+            func
+        ).intersection(kwargs):
             return func
         return cls(func, kwargs)
 
