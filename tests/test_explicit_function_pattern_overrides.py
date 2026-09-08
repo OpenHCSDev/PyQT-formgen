@@ -2,6 +2,7 @@
 
 from objectstate import ObjectState
 from python_introspect import parameter_exclusions, set_parameter_exclusions
+
 from pyqt_reactive.services.function_pattern_code_document import (
     EditableFunctionPatternCallable,
     FunctionPatternCodeDocumentService,
