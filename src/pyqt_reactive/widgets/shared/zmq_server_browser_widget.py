@@ -262,7 +262,8 @@ class ZMQServerBrowserWidgetABC(QWidget, ABC, metaclass=_CombinedMeta):
         return self._endpoint_authority.scan_service
 
     @property
-    def _endpoint_snapshot(self) -> EndpointObservationSnapshot:
+    def endpoint_snapshot(self) -> EndpointObservationSnapshot:
+        """Current endpoint authority for external UI projections."""
         return self._endpoint_authority.snapshot
 
     @property
@@ -318,7 +319,7 @@ class ZMQServerBrowserWidgetABC(QWidget, ABC, metaclass=_CombinedMeta):
 
         if not isinstance(status, EndpointStartupStatus):
             raise TypeError("Endpoint startup observation requires EndpointStartupStatus")
-        self._commit_endpoint_snapshot(self._endpoint_snapshot.with_startup_status(port, status))
+        self._commit_endpoint_snapshot(self.endpoint_snapshot.with_startup_status(port, status))
 
     def _commit_endpoint_snapshot(
         self,

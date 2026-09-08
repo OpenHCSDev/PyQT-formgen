@@ -105,7 +105,7 @@ def test_endpoint_snapshot_is_the_authority_for_tree_and_status(qapp) -> None:
         )
     )
 
-    assert browser._endpoint_snapshot is snapshot
+    assert browser.endpoint_snapshot is snapshot
     assert published == [snapshot]
     assert snapshot.status_for_port(5000).phase is EndpointStartupPhase.CONNECTED
     assert snapshot.status_for_port(5001).phase is EndpointStartupPhase.DISCONNECTED
@@ -188,7 +188,7 @@ def test_scan_result_from_replaced_service_cannot_commit(qapp) -> None:
         )
     )
 
-    assert browser._endpoint_snapshot == EndpointObservationSnapshot()
+    assert browser.endpoint_snapshot == EndpointObservationSnapshot()
     assert follow_up_scans == [True]
 
 
@@ -241,7 +241,7 @@ def test_replacing_scan_declaration_immediately_invalidates_previous_rows(
 
     assert browser._scan_service is replacement
     assert browser._scan_ports == (7000,)
-    assert browser._endpoint_snapshot == EndpointObservationSnapshot()
+    assert browser.endpoint_snapshot == EndpointObservationSnapshot()
     assert browser.server_tree.topLevelItemCount() == 0
     assert refreshes == [True]
     assert terminated == [
@@ -327,8 +327,8 @@ def test_startup_event_and_tree_share_the_endpoint_snapshot_authority(qapp) -> N
 
     browser.observe_endpoint_startup(5000, status)
 
-    assert browser._endpoint_snapshot.status_for_port(5000) is status
-    assert published == [browser._endpoint_snapshot]
+    assert browser.endpoint_snapshot.status_for_port(5000) is status
+    assert published == [browser.endpoint_snapshot]
     row = browser.server_tree.topLevelItem(0)
     assert row.text(0) == "Port 5000 - Endpoint"
     assert row.text(1) == "🚀 Starting"
@@ -340,7 +340,7 @@ def test_startup_event_and_tree_share_the_endpoint_snapshot_authority(qapp) -> N
     )
     browser.observe_endpoint_startup(5000, connected_status)
     row = browser.server_tree.topLevelItem(0)
-    assert browser._endpoint_snapshot.status_for_port(5000) is connected_status
+    assert browser.endpoint_snapshot.status_for_port(5000) is connected_status
     assert row.text(1) == "✅ Connected"
     assert row.text(2) == "Connected to endpoint"
 
@@ -351,7 +351,7 @@ def test_startup_event_and_tree_share_the_endpoint_snapshot_authority(qapp) -> N
             message="Import failed",
         ),
     )
-    assert browser._endpoint_snapshot.observations == ()
+    assert browser.endpoint_snapshot.observations == ()
     assert browser.server_tree.topLevelItemCount() == 0
 
     browser.deleteLater()
@@ -499,7 +499,7 @@ def test_follow_up_scan_uses_the_committed_snapshot_authority(qapp, monkeypatch)
     first_scan, _ = callbacks.pop()
     first_scan()
 
-    assert browser._endpoint_snapshot is observed
+    assert browser.endpoint_snapshot is observed
     second_scan, _ = callbacks.pop()
     second_scan()
     assert scan_service.previous_snapshots == [
@@ -534,11 +534,11 @@ def test_lifecycle_commit_supersedes_an_older_in_flight_scan(qapp, monkeypatch) 
         message="Preparing capabilities",
     )
     browser.observe_endpoint_startup(5000, startup_status)
-    startup_snapshot = browser._endpoint_snapshot
+    startup_snapshot = browser.endpoint_snapshot
     first_scan, _ = callbacks.pop()
     first_scan()
 
-    assert browser._endpoint_snapshot.status_for_port(5000) is startup_status
+    assert browser.endpoint_snapshot.status_for_port(5000) is startup_status
     second_scan, _ = callbacks.pop()
     second_scan()
     assert scan_service.previous_snapshots == [
