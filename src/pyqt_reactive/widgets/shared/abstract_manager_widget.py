@@ -34,8 +34,6 @@ from pyqt_reactive.widgets.shared.list_item_delegate import (
     LAYOUT_ROLE,
     StyledText,
 )
-# Backwards compat alias
-SEGMENTS_ROLE = LAYOUT_ROLE
 from objectstate import DottedFieldPath, ObjectStateRegistry, patch_lazy_constructors
 from pyqt_reactive.widgets.mixins import (
     CrossWindowPreviewMixin,
@@ -82,11 +80,15 @@ from pyqt_reactive.widgets.shared.manager_reorder_controller import (
 )
 from pyqt_reactive.widgets.shared.manager_status_controller import ManagerStatusController
 from pyqt_reactive.services.service_registry import AutoRegisterServiceMixin
+from pyqt_reactive.services.window_navigation import ListItemWindowNavigationDriver
 from pyqt_reactive.services.window_code_document import (
     WindowCodeDocument,
     WindowCodeDocumentDriver,
 )
 from pyqt_reactive.widgets.shared.scope_visual_config import ListItemType
+
+# Backwards compat alias
+SEGMENTS_ROLE = LAYOUT_ROLE
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +341,19 @@ class ManagerActionWorkflowMixin:
 
 class ManagerSelectionWorkflowMixin:
     """Selection, activation, and reorder workflow behavior."""
+
+    def window_navigation_driver(self) -> ListItemWindowNavigationDriver:
+        """Bind generic list navigation to the existing selection owner."""
+        return ListItemWindowNavigationDriver(
+            select_item=lambda item_id: self._selection_controller.select_item_id(
+                self._selection_operations(), item_id
+            ),
+            has_navigation_items=lambda: self.item_list.count() > 0,
+            contains_item=lambda item_id: self._selection_controller.list_item_for_id(
+                self._selection_operations(), item_id
+            )
+            is not None,
+        )
 
     def get_selected_items(self) -> List[ManagerItemT]:
         """Get currently selected backing items."""

@@ -123,6 +123,7 @@ class NavigationRetryScheduler:
             return retry_counts[navigation_key]
         return 0
 
+
 class WindowManager:
     """Global registry for scoped windows with navigation support.
 
@@ -445,7 +446,9 @@ class WindowManager:
                 field_path=field_path,
             )
 
-        logger.debug(f"[WINDOW_MGR] Registered and showed new window for scope: {scope_id}")
+        logger.debug(
+            f"[WINDOW_MGR] Registered and showed new window for scope: {scope_id}"
+        )
         return window
 
     @classmethod
@@ -502,7 +505,9 @@ class WindowManager:
 
         lookup = cls._resolve_registered_window(scope_id)
         if not lookup.is_present:
-            logger.debug(f"[WINDOW_MGR] Cannot navigate - window not open for scope: {scope_id}")
+            logger.debug(
+                f"[WINDOW_MGR] Cannot navigate - window not open for scope: {scope_id}"
+            )
             return WindowNavigationDispatch(
                 focused=False,
                 target_requested=item_id is not None or field_path is not None,
@@ -539,9 +544,34 @@ class WindowManager:
         """Dispatch an accepted target through the driver registered for ``scope_id``."""
 
         driver = cls._navigation_driver(scope_id)
+        return cls.dispatch_widget_navigation(
+            window,
+            driver,
+            requested_scope_id=(
+                scope_id if requested_scope_id is None else requested_scope_id
+            ),
+            item_id=item_id,
+            field_path=field_path,
+        )
+
+    @classmethod
+    def dispatch_widget_navigation(
+        cls,
+        window: QWidget,
+        driver: WindowNavigationDriver,
+        *,
+        requested_scope_id: str,
+        item_id: str | None = None,
+        field_path: str | None = None,
+    ) -> WindowNavigationDispatch:
+        """Navigate an already-focused widget through its declared driver.
+
+        Embedded panes and registered windows share the same admission and
+        deferred-readiness lifecycle without a second window registration.
+        """
         navigation_request = RegisteredWindowNavigationRequest(
             window=window,
-            requested_scope_id=(scope_id if requested_scope_id is None else requested_scope_id),
+            requested_scope_id=requested_scope_id,
             item_id=item_id,
             field_path=field_path,
         )
@@ -566,7 +596,10 @@ class WindowManager:
         """Focus/navigate the registered scope that owns a concrete Qt window."""
         target_window = window.window()
         for scope_id, registered_window in cls._scoped_windows.items():
-            if registered_window is window or registered_window.window() is target_window:
+            if (
+                registered_window is window
+                or registered_window.window() is target_window
+            ):
                 return cls.focus_and_navigate(
                     scope_id,
                     item_id=item_id,
@@ -713,14 +746,20 @@ class WindowManager:
     def require_code_document_driver(cls, scope_id: str) -> "WindowCodeDocumentDriver":
         """Return the code-document driver explicitly registered for a scope."""
         if scope_id not in cls._code_document_drivers:
-            raise KeyError(f"Window scope has no code-document driver registered: {scope_id!r}")
+            raise KeyError(
+                f"Window scope has no code-document driver registered: {scope_id!r}"
+            )
         return cls._code_document_drivers[scope_id]
 
     @classmethod
     def get_code_document_scopes(cls) -> list[str]:
         """Return open window scopes with registered code-document drivers."""
         open_scopes = set(cls.get_open_scopes())
-        return [scope_id for scope_id in cls._code_document_drivers if scope_id in open_scopes]
+        return [
+            scope_id
+            for scope_id in cls._code_document_drivers
+            if scope_id in open_scopes
+        ]
 
     @classmethod
     def is_open(cls, scope_id: str) -> bool:

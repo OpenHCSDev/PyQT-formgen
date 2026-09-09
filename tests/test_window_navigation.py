@@ -76,6 +76,50 @@ def test_null_driver_focuses_without_claiming_target_navigation(qapp) -> None:
         window.close()
 
 
+def test_list_driver_accepts_only_present_identity_and_preserves_dispatch(qapp) -> None:
+    from PyQt6.QtWidgets import QWidget
+
+    from pyqt_reactive.services.window_manager import WindowManager
+    from pyqt_reactive.services.window_navigation import ListItemWindowNavigationDriver
+
+    window = QWidget()
+    items = {"first", "second"}
+    selected = []
+    driver = ListItemWindowNavigationDriver(
+        selected.append, lambda: bool(items), items.__contains__
+    )
+    WindowManager.register("list", window, navigation_driver=driver)
+    try:
+        for item_id, field_path, accepted in (
+            ("second", None, True),
+            ("absent", None, False),
+            ("first", "field", False),
+            (None, "field", False),
+        ):
+            result = WindowManager.focus_and_navigate_result(
+                "list", item_id=item_id, field_path=field_path
+            )
+            qapp.processEvents()
+            assert result.focused
+            assert result.navigated is accepted
+        assert selected == ["second"]
+        items.clear()
+        result = WindowManager.focus_and_navigate_result("list", item_id="second")
+        qapp.processEvents()
+        assert not result.navigated
+        assert selected == ["second"]
+
+        items.add("first")
+        result = WindowManager.focus_and_navigate_result("list", item_id="first")
+        assert result.navigated  # The original target was accepted.
+        items.remove("first")  # The list changes before deferred Qt dispatch.
+        qapp.processEvents()
+        assert selected == ["second"]  # Stale navigation is cancelled.
+    finally:
+        WindowManager.unregister("list", window)
+        window.close()
+
+
 def test_build_owned_readiness_does_not_spend_poll_retry_budget(qapp) -> None:
     from PyQt6.QtWidgets import QWidget
 

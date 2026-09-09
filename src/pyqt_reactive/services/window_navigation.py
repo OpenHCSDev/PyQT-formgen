@@ -215,14 +215,8 @@ class CompositeWindowNavigationDriver(WindowNavigationDriver):
         return tuple(
             driver
             for driver in self._drivers
-            if (
-                request.field_path is not None
-                and driver.accepts_field_path(request)
-            )
-            or (
-                request.item_id is not None
-                and driver.accepts_item_id(request)
-            )
+            if (request.field_path is not None and driver.accepts_field_path(request))
+            or (request.item_id is not None and driver.accepts_item_id(request))
         )
 
 
@@ -345,15 +339,17 @@ class ListItemWindowNavigationDriver(WindowNavigationDriver):
         self,
         select_item: Callable[[str], None],
         has_navigation_items: Callable[[], bool],
+        contains_item: Callable[[str], bool],
     ) -> None:
         self._select_item = select_item
         self._has_navigation_items = has_navigation_items
+        self._contains_item = contains_item
 
     def accepts_item_id(
         self,
         request: RegisteredWindowNavigationRequest,
     ) -> bool:
-        return request.item_id is not None
+        return request.item_id is not None and self._contains_item(request.item_id)
 
     def readiness(
         self,
@@ -368,6 +364,6 @@ class ListItemWindowNavigationDriver(WindowNavigationDriver):
         )
 
     def execute(self, request: RegisteredWindowNavigationRequest) -> None:
-        if request.item_id is None:
+        if not self.accepts_item_id(request):
             return
         self._select_item(request.item_id)

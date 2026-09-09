@@ -8,6 +8,8 @@ from typing import Any, ClassVar
 
 from abc import ABC, abstractmethod
 from metaclass_registry import AutoRegisterMeta
+from PyQt6.QtCore import QItemSelectionModel
+from PyQt6.QtWidgets import QListWidgetItem
 
 from pyqt_reactive.widgets.mixins import handle_selection_change_with_prevention
 
@@ -21,8 +23,7 @@ class SelectionPayloadProjection(ABC, metaclass=AutoRegisterMeta):
     registry_key: ClassVar[str | None] = None
 
     @abstractmethod
-    def selected(self, item: Any, item_id: str) -> Any:
-        ...
+    def selected(self, item: Any, item_id: str) -> Any: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +70,29 @@ class ManagerSelectionOperations:
 class ManagerSelectionController:
     """Owns selection mutation, selection signals, and item activation."""
 
+    def list_item_for_id(
+        self, operations: ManagerSelectionOperations, item_id: str
+    ) -> QListWidgetItem | None:
+        """Resolve an exact backing-item identity without interpreting display text."""
+        for row in range(operations.list_widget.count()):
+            list_item = operations.list_widget.item(row)
+            item = operations.item_from_list_item(list_item)
+            if item is not None and operations.item_id(item) == item_id:
+                return list_item
+        return None
+
+    def select_item_id(
+        self, operations: ManagerSelectionOperations, item_id: str
+    ) -> None:
+        """Select one existing item through the ordinary Qt selection lifecycle."""
+        list_item = self.list_item_for_id(operations, item_id)
+        if list_item is None:
+            raise ValueError(f"Unknown manager item identity: {item_id!r}")
+        operations.list_widget.setCurrentItem(
+            list_item, QItemSelectionModel.SelectionFlag.ClearAndSelect
+        )
+        operations.list_widget.scrollToItem(list_item)
+
     def selected_items(self, operations: ManagerSelectionOperations) -> list[Any]:
         selected_items = []
         for list_item in operations.list_widget.selectedItems():
@@ -107,7 +131,9 @@ class ManagerSelectionController:
         operations.set_selection_id(item_id)
 
         if not operations.in_time_travel():
-            operations.selection_signal().emit(operations.selected_payload(item, item_id))
+            operations.selection_signal().emit(
+                operations.selected_payload(item, item_id)
+            )
 
     def _clear_selection(self, operations: ManagerSelectionOperations) -> None:
         operations.set_selection_id("")
