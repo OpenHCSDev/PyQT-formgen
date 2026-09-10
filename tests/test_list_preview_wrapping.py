@@ -288,7 +288,7 @@ def test_mixed_rows_resize_scroll_and_keep_wrapped_text_reachable(qtbot, preview
 
 @pytest.mark.parametrize("focused", [False, True])
 def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
-    qtbot, preview_list, focused
+    qtbot, preview_list, focused, monkeypatch
 ):
     from pathlib import Path
 
@@ -299,6 +299,15 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
             return QColor(230, 45, 65, 200)
 
     view = preview_list
+    native_frames = []
+    style = view.style()
+    native_draw = style.drawControl
+
+    def record_native_frame(element, option, painter, widget):
+        native_frames.append((option.rect.getRect(), option.state.value))
+        return native_draw(element, option, painter, widget)
+
+    monkeypatch.setattr(style, "drawControl", record_native_frame)
     wrapped, _horizontal = add_row(view), add_row(view)
     wrapped.setData(PREVIEW_WRAP_ROLE, PreviewWrapMode.WRAPPED)
     wrapped.setData(LEADING_MARKER_ROLE, ListItemLeadingMarker())
@@ -312,6 +321,8 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
         qtbot.waitUntil(view.hasFocus)
     capture_height = min(view.visualItemRect(wrapped).height(), view.viewport().height())
     before = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
+    before_frames = tuple(native_frames)
+    native_frames.clear()
     view.horizontalScrollBar().setValue(view.horizontalScrollBar().maximum())
     after = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
     evidence = Path("test-artifacts/wrapped-row-scroll") / str(focused)
@@ -350,6 +361,8 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
                 ),
                 "explicit_repaint_restores_equality": before == repainted,
                 "focus": view.hasFocus(),
+                "before_native_frames": before_frames,
+                "after_native_frames": native_frames,
                 "row_rect": view.visualItemRect(wrapped).getRect(),
             },
         )
