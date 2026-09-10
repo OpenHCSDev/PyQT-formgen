@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QListWidget, QListWidgetItem
 
 from pyqt_reactive.widgets.mixins import preserve_selection_during_update
+from pyqt_reactive.widgets.shared.list_item_delegate import OBJECT_STATE_PATH_ROLE
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +81,7 @@ class ManagerListUpdateSnapshot(Generic[ListItemT]):
     ) -> bool:
         if self.current_count != self.expected_count or self.current_count == 0:
             return True
-        current_scope_ids = {
-            operations.scope_for_item(item)
-            for item in self.backing_items
-        }
+        current_scope_ids = {operations.scope_for_item(item) for item in self.backing_items}
         changed = current_scope_ids != self.subscribed_scope_ids
         logger.debug(
             "FLASH_DEBUG: count=%s, current_scopes=%s, subscribed_scopes=%s, items_changed=%s",
@@ -109,6 +107,11 @@ class ManagerListUpdateSnapshot(Generic[ListItemT]):
             self.current_count == self.expected_count
             and self.current_count > 0
             and not self.scopes_changed(operations)
+            and all(
+                not (row_scope := operations.item_list.item(index).data(OBJECT_STATE_PATH_ROLE))
+                or row_scope == operations.scope_for_item(item)
+                for index, item in enumerate(self.backing_items)
+            )
         )
 
 
@@ -269,14 +272,24 @@ class ManagerListUpdater:
     ) -> None:
         operations.cleanup_flash_subscriptions()
         operations.clear_scope_to_list_item()
-        operations.item_list.clear()
+        # Transfer surviving Qt rows instead of reconstructing their local view state.
+        retained_rows = {}
+        for row_index in reversed(range(operations.item_list.count())):
+            row = operations.item_list.takeItem(row_index)
+            scope_id = row.data(OBJECT_STATE_PATH_ROLE)
+            if scope_id:
+                retained_rows[scope_id] = row
 
         for index, item_obj in enumerate(backing_items):
             display_text = operations.format_item(item_obj, index, update_context)
-            list_item = QListWidgetItem(display_text)
+            scope_id = operations.scope_for_item(item_obj)
+            list_item = retained_rows.pop(scope_id, None)
+            if list_item is None:
+                list_item = QListWidgetItem(display_text)
+            else:
+                list_item.setText(display_text)
             self._apply_item_roles(operations, list_item, item_obj, index, display_text)
             operations.item_list.addItem(list_item)
-            scope_id = operations.scope_for_item(item_obj)
             operations.subscribe_flash(item_obj, list_item, scope_id)
 
     def _refresh_list_item(

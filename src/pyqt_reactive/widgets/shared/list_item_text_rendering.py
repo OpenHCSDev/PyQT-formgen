@@ -7,7 +7,12 @@ from PyQt6.QtCore import QPointF, QSize
 from PyQt6.QtGui import QColor, QFont, QPainter, QTextCharFormat, QTextLayout, QTextOption
 from objectstate import DottedFieldPath
 
-from pyqt_reactive.widgets.shared.styled_text_layout import Segment, StyledTextLayout
+from pyqt_reactive.widgets.shared.styled_text_layout import (
+    Segment,
+    StyledTextLayout,
+    StyledParagraph,
+    ParagraphLineGuide,
+)
 
 
 def field_matches(path: str | None, field_set: set[str]) -> bool:
@@ -31,15 +36,31 @@ class TextPaintContext:
 
 
 @dataclass(frozen=True)
+class PreparedLineGuide:
+    """Resolved guide geometry alongside, never inside, the formatted text."""
+
+    guide: ParagraphLineGuide
+    position: QPointF
+    line_height: float
+    color: QColor
+
+    def paint(self, painter: QPainter, origin: QPointF) -> None:
+        self.guide.paint(painter, origin + self.position, self.line_height, self.color)
+
+
+@dataclass(frozen=True)
 class PreparedTextLayout:
     """Laid-out paragraphs shared verbatim by size hints and painting."""
 
     paragraphs: tuple[QTextLayout, ...]
     size: QSize
+    line_guides: tuple[PreparedLineGuide, ...] = ()
 
     def paint(self, painter: QPainter, origin: QPointF) -> None:
         for paragraph in self.paragraphs:
             paragraph.draw(painter, origin)
+        for guide in self.line_guides:
+            guide.paint(painter, origin)
 
 
 class TextMetricCache:
@@ -71,10 +92,13 @@ class StyledTextRenderer:
         paragraphs = (
             layout.display_paragraphs()
             if isinstance(layout, StyledTextLayout)
-            else [[(Segment(line), True)] for line in layout.replace("\u2028", "\n").split("\n")]
+            else [
+                StyledParagraph(((Segment(line), True),))
+                for line in layout.replace("\u2028", "\n").split("\n")
+            ]
         )
         key = (
-            tuple(tuple(paragraph) for paragraph in paragraphs),
+            tuple(paragraphs),
             context.base_font.key(),
             context.name_color.rgba(),
             context.preview_color.rgba(),
@@ -87,13 +111,14 @@ class StyledTextRenderer:
             return cached
 
         prepared = []
+        guides = []
         y = 0.0
         max_width = 0.0
-        for spans in paragraphs:
+        for declaration in paragraphs:
             text_parts = []
             formats = []
             position = 0
-            for segment, primary in spans:
+            for segment, primary in declaration.spans:
                 dirty = field_matches(segment.field_path, context.dirty_fields)
                 text = segment.text
                 if dirty:
@@ -126,15 +151,29 @@ class StyledTextRenderer:
                 line = paragraph.createLine()
                 if not line.isValid():
                     break
+                # Qt supplies line metrics only after its first width assignment.
                 line.setLineWidth(1e9 if width is None else max(1, width))
-                line.setPosition(QPointF(0, y))
+                gutter = 0.0
+                if declaration.line_guide is not None:
+                    gutter = declaration.line_guide.width(line.height())
+                    if width is not None:
+                        line.setLineWidth(max(1, width - gutter))
+                    guides.append(
+                        PreparedLineGuide(
+                            declaration.line_guide,
+                            QPointF(0, y),
+                            line.height(),
+                            context.preview_color,
+                        )
+                    )
+                line.setPosition(QPointF(gutter, y))
                 y += line.height()
-                max_width = max(max_width, line.naturalTextWidth())
+                max_width = max(max_width, gutter + line.naturalTextWidth())
             paragraph.endLayout()
             prepared.append(paragraph)
         return self._metric_cache.remember(
             key,
-            PreparedTextLayout(tuple(prepared), QSize(ceil(max_width), ceil(y))),
+            PreparedTextLayout(tuple(prepared), QSize(ceil(max_width), ceil(y)), tuple(guides)),
         )
 
 

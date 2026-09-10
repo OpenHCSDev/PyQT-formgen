@@ -9,7 +9,15 @@ from functools import partial
 from typing import ClassVar, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
-from PyQt6.QtCore import QAbstractItemModel, QModelIndex, QPoint, QRect, Qt, QTimer
+from PyQt6.QtCore import (
+    QAbstractItemModel,
+    QModelIndex,
+    QPoint,
+    QRect,
+    Qt,
+    QTimer,
+    QItemSelectionModel,
+)
 from PyQt6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
@@ -36,6 +44,7 @@ from pyqt_reactive.services.widget_tree_projection_config import (
     WidgetTreeProjectionPolicy,
 )
 from pyqt_reactive.widgets.shared.styled_text_layout import StyledText, StyledTextLayout
+from pyqt_reactive.widgets.shared.list_item_delegate import PreviewWrapMode
 
 TextMethodWidget: TypeAlias = QLineEdit | QAbstractSpinBox
 PlainTextMethodWidget: TypeAlias = QTextEdit | QPlainTextEdit
@@ -50,17 +59,62 @@ class WidgetProjectionError(RuntimeError):
     """Raised when a QWidget tree cannot be projected through nominal projectors."""
 
 
+class ItemActionABC(ABC):
+    """Nominal owner of a projected model-row action."""
+
+    default: ClassVar[bool] = False
+
+    @abstractmethod
+    def available(self, view: QAbstractItemView, index: QModelIndex) -> bool: ...
+
+    @abstractmethod
+    def invoke(self, view: QAbstractItemView, index: QModelIndex) -> None: ...
+
+
+class SelectItemAction(ItemActionABC):
+    default = True
+
+    def available(self, view: QAbstractItemView, index: QModelIndex) -> bool:
+        return bool(index.flags() & Qt.ItemFlag.ItemIsSelectable)
+
+    def invoke(self, view: QAbstractItemView, index: QModelIndex) -> None:
+        view.setCurrentIndex(index)
+        selection = view.selectionModel()
+        if selection is not None:
+            selection.select(
+                index,
+                QItemSelectionModel.SelectionFlag.ClearAndSelect
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
+        view.scrollTo(index)
+
+
+class TogglePreviewAction(ItemActionABC):
+    def available(self, view: QAbstractItemView, index: QModelIndex) -> bool:
+        return PreviewWrapMode.available(view, index)
+
+    def invoke(self, view: QAbstractItemView, index: QModelIndex) -> None:
+        PreviewWrapMode.toggle(view, index)
+
+
 class WidgetActionKind(Enum):
     """Action family exposed for agent/window-manager consumers."""
 
     BUTTON = "button"
     CHECKABLE = "checkable"
     CHOICE = "choice"
-    ITEM_SELECT = "item_select"
+    ITEM_SELECT = "item_select", SelectItemAction()
+    ITEM_PREVIEW_TOGGLE = "item_preview_toggle", TogglePreviewAction()
     MENU = "menu"
     SPIN_INPUT = "spin_input"
     TAB_SELECTOR = "tab_selector"
     TEXT_INPUT = "text_input"
+
+    def __new__(cls, value: str, item_action: ItemActionABC | None = None) -> WidgetActionKind:
+        member = object.__new__(cls)
+        member._value_ = value
+        member.item_action = item_action
+        return member
 
 
 class WidgetActionInvocationError(RuntimeError):
@@ -77,9 +131,7 @@ class WidgetActionTargetInvalidError(WidgetActionInvocationError):
     def __init__(self, target_index: int | None, item_count: int) -> None:
         self.target_index = target_index
         self.item_count = item_count
-        super().__init__(
-            f"Target index {target_index!r} is invalid for {item_count} item(s)."
-        )
+        super().__init__(f"Target index {target_index!r} is invalid for {item_count} item(s).")
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,13 +216,9 @@ class WidgetDescriptor(WidgetNodeIdentity):
     def child_at_index(self, child_index: int) -> WidgetDescriptor | None:
         """Resolve one child through its stable Qt/model index identity."""
 
-        matches = tuple(
-            child for child in self.children if child.child_index == child_index
-        )
+        matches = tuple(child for child in self.children if child.child_index == child_index)
         if len(matches) > 1:
-            raise WidgetProjectionError(
-                f"Widget path has duplicate child index {child_index}."
-            )
+            raise WidgetProjectionError(f"Widget path has duplicate child index {child_index}.")
         return matches[0] if matches else None
 
 
@@ -205,6 +253,7 @@ class _WidgetTreeProjectionState:
 
         self.projected_nodes += 1
         return True
+
 
 @dataclass(slots=True)
 class _ItemModelProjectionState:
@@ -557,9 +606,7 @@ class QAbstractItemViewDescriptorProjector(WidgetDescriptorProjector):
         current_row = current_index.row() if current_index.isValid() else None
         current_text = None
         if current_index.isValid():
-            current_text = WidgetTreeProjectionService._model_index_display_text(
-                current_index
-            )
+            current_text = WidgetTreeProjectionService._model_index_display_text(current_index)
             if current_text == "":
                 current_text = None
 
@@ -648,9 +695,7 @@ class TabSelectionWidgetDescriptorProjector(IndexedSelectionWidgetDescriptorProj
             current_index=current_index,
             current_text=current_text,
             item_count=tab_control.count(),
-            item_texts=tuple(
-                tab_control.tabText(index) for index in range(tab_control.count())
-            ),
+            item_texts=tuple(tab_control.tabText(index) for index in range(tab_control.count())),
         )
 
 
@@ -748,6 +793,7 @@ class WidgetDescriptorProjectorRegistry:
         raise WidgetProjectionError(
             f"No QWidget descriptor projector registered for {type(widget).__name__}"
         )
+
 
 DEFAULT_WIDGET_DESCRIPTOR_PROJECTOR_REGISTRY = (
     WidgetDescriptorProjectorRegistry.from_registered_projectors()
@@ -933,9 +979,7 @@ class WidgetTreeProjectionService:
                 continue
             if not state.consume_node():
                 projection_state.truncated = True
-                if state.consume_truncation_report() and projection_state.consume_node(
-                    child_path
-                ):
+                if state.consume_truncation_report() and projection_state.consume_node(child_path):
                     descriptors.append(
                         cls._model_truncation_descriptor(
                             view=view,
@@ -1006,9 +1050,7 @@ class WidgetTreeProjectionService:
             visible=index_visible,
             enabled=index_enabled,
             geometry=WidgetRect.from_qrect(rect),
-            global_geometry=WidgetRect.from_qrect(
-                cls._model_index_global_rect(view, rect)
-            ),
+            global_geometry=WidgetRect.from_qrect(cls._model_index_global_rect(view, rect)),
             tool_tip=cls._model_index_role_text(index, Qt.ItemDataRole.ToolTipRole),
             status_tip=cls._model_index_role_text(index, Qt.ItemDataRole.StatusTipRole),
             whats_this=cls._model_index_role_text(index, Qt.ItemDataRole.WhatsThisRole),
@@ -1016,8 +1058,10 @@ class WidgetTreeProjectionService:
             text=text_projection.value,
             text_truncated=text_projection.truncated,
             title=None,
-            action_kinds=(
-                (WidgetActionKind.ITEM_SELECT,) if index_selectable else ()
+            action_kinds=tuple(
+                kind
+                for kind in WidgetActionKind
+                if kind.item_action is not None and kind.item_action.available(view, index)
             ),
             clickable=index_actionable,
             actionable=index_actionable,

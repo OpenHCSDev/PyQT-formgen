@@ -3,6 +3,9 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from PyQt6.QtCore import QPointF
+from PyQt6.QtGui import QPainter, QPen, QColor
+
 
 def join_segments(segments: List["Segment"], default_sep: str) -> str:
     """Join segments with separators, respecting per-segment sep_before overrides."""
@@ -24,6 +27,33 @@ class Segment:
     asterisk_prefix: bool = False
 
 
+@dataclass(frozen=True)
+class ParagraphLineGuide:
+    """A graphical hanging indent repeated for each laid-out visual line."""
+
+    width_in_line_heights: float = 1.0
+    points: tuple[tuple[float, float], ...] = ((0.22, 0.22), (0.22, 0.68), (0.78, 0.68))
+
+    def width(self, line_height: float) -> float:
+        return self.width_in_line_heights * line_height
+
+    def paint(self, painter: QPainter, origin: QPointF, line_height: float, color: QColor) -> None:
+        painter.save()
+        painter.setPen(QPen(color, 1.0))
+        points = tuple(origin + QPointF(x * line_height, y * line_height) for x, y in self.points)
+        for start, end in zip(points, points[1:]):
+            painter.drawLine(start, end)
+        painter.restore()
+
+
+@dataclass(frozen=True)
+class StyledParagraph:
+    """Semantic spans and optional graphical line decoration."""
+
+    spans: tuple[tuple[Segment, bool], ...]
+    line_guide: ParagraphLineGuide | None = None
+
+
 @dataclass
 class StyledTextLayout:
     """Structured layout for styled text rendering."""
@@ -36,13 +66,13 @@ class StyledTextLayout:
     config_segments: List[Segment] = field(default_factory=list)
     multiline: bool = False
 
-    def display_paragraphs(self) -> list[list[tuple[Segment, bool]]]:
+    def display_paragraphs(self) -> list[StyledParagraph]:
         """Project display syntax once for both Qt painting and size calculation.
 
         The boolean marks primary (name/status) text; other spans use the
         preview color. Original segments retain their field-level styling.
         """
-        title = [(Segment(self.status_prefix + "▶ "), True), (self.name, True)]
+        title = [(Segment(self.status_prefix), True), (self.name, True)]
         inline = self.first_line_segments
         if not self.multiline and not inline:
             inline = self.preview_segments
@@ -50,21 +80,20 @@ class StyledTextLayout:
             title += [(Segment("  ("), False)]
             title += self._separated_spans(inline, " | ")
             title += [(Segment(")"), False)]
-        paragraphs = [title]
+        paragraphs = [StyledParagraph(tuple(title))]
         if not self.multiline:
             return paragraphs
         if self.detail_line:
-            paragraphs.append([(Segment("  " + self.detail_line), False)])
+            paragraphs.append(StyledParagraph(((Segment("  " + self.detail_line), False),)))
         if self.preview_segments or self.config_segments:
-            preview = [(Segment("  └─ "), False)]
-            preview += self._separated_spans(self.preview_segments, " | ")
+            preview = self._separated_spans(self.preview_segments, " | ")
             if self.preview_segments and self.config_segments:
                 preview += [(Segment(" | "), False)]
             if self.config_segments:
                 preview += [(Segment("configs=["), False)]
                 preview += self._separated_spans(self.config_segments, ", ")
                 preview += [(Segment("]"), False)]
-            paragraphs.append(preview)
+            paragraphs.append(StyledParagraph(tuple(preview), ParagraphLineGuide()))
         return paragraphs
 
     @staticmethod

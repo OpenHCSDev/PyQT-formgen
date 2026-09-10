@@ -7,10 +7,28 @@ and other widgets that display items with preview labels.
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
+from typing import cast
 
-from PyQt6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QStyle
+from PyQt6.QtWidgets import (
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QStyle,
+    QAbstractItemView,
+    QListView,
+)
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QPolygon
-from PyQt6.QtCore import Qt, QRect, QPoint, QPointF, QSize
+from PyQt6.QtCore import (
+    Qt,
+    QRect,
+    QPoint,
+    QPointF,
+    QSize,
+    QEvent,
+    QPersistentModelIndex,
+    QModelIndex,
+    QObject,
+)
 
 from pyqt_reactive.widgets.shared.scope_color_utils import tint_color_perceptual
 from pyqt_reactive.widgets.shared.scope_visual_config import (
@@ -40,6 +58,44 @@ DIRTY_FIELDS_ROLE = Qt.ItemDataRole.UserRole + 13  # Set[str] - dotted paths of 
 SIG_DIFF_FIELDS_ROLE = Qt.ItemDataRole.UserRole + 14  # Set[str] - dotted paths of sig-diff fields
 LEADING_MARKER_ROLE_OFFSET = 15
 LEADING_MARKER_ROLE = Qt.ItemDataRole.UserRole + LEADING_MARKER_ROLE_OFFSET  # ListItemLeadingMarker
+PREVIEW_WRAP_ROLE = Qt.ItemDataRole.UserRole + 16
+
+
+class PreviewWrapMode(Enum):
+    """Explicit row presentation; an absent model role inherits the view default."""
+
+    HORIZONTAL = False
+    WRAPPED = True
+
+    @property
+    def wrapped(self) -> bool:
+        return self.value
+
+    @classmethod
+    def available(cls, view: QAbstractItemView, index: QModelIndex) -> bool:
+        return (
+            isinstance(view, QListView)
+            and isinstance(view.itemDelegateForIndex(index), MultilinePreviewItemDelegate)
+            and isinstance(index.data(LAYOUT_ROLE), StyledTextLayout)
+        )
+
+    @classmethod
+    def for_index(cls, view: QListView, index: QModelIndex) -> "PreviewWrapMode":
+        mode = index.data(PREVIEW_WRAP_ROLE)
+        return cls(view.wordWrap()) if mode is None else mode
+
+    @classmethod
+    def toggle(cls, view: QAbstractItemView, index: QModelIndex) -> None:
+        """Shared row mutation for native disclosure and structural UI actions."""
+        if not cls.available(view, index):
+            raise ValueError("This row does not declare a structured preview.")
+        view.model().setData(
+            index, cls(not cls.for_index(cast(QListView, view), index).wrapped), PREVIEW_WRAP_ROLE
+        )
+        view.itemDelegateForIndex(index).sizeHintChanged.emit(index)
+        view.doItemsLayout()
+        view.viewport().update()
+
 
 # Backwards compat alias
 SEGMENTS_ROLE = LAYOUT_ROLE
@@ -79,9 +135,16 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
     TEXT_INSET_X = 5
     TEXT_INSET_Y = 3
     MINIMUM_ROW_HEIGHT = 29
+    DISCLOSURE_WIDTH = 16
 
-    def __init__(self, name_color: QColor, preview_color: QColor, selected_text_color: QColor,
-                 parent=None, manager=None):
+    def __init__(
+        self,
+        name_color: QColor,
+        preview_color: QColor,
+        selected_text_color: QColor,
+        parent=None,
+        manager=None,
+    ):
         """Initialize delegate with color scheme.
 
         Args:
@@ -98,6 +161,8 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         self._manager = manager
         self._text_metric_cache = TextMetricCache()
         self._text_renderer = StyledTextRenderer(self._text_metric_cache)
+        self._pressed_disclosure = QPersistentModelIndex()
+        parent.viewport().installEventFilter(self)
         # NOTE: Flash rendering moved to WindowFlashOverlay for O(1) performance
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
@@ -117,7 +182,9 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
             layers = scheme.step_border_layers
             if layers:
                 border_inset = sum(layer[0] for layer in layers)
-        content_rect = option.rect.adjusted(border_inset, border_inset, -border_inset, -border_inset)
+        content_rect = option.rect.adjusted(
+            border_inset, border_inset, -border_inset, -border_inset
+        )
 
         # Scope-based background: match border colors (only when not selected)
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
@@ -144,13 +211,15 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
                     painter.fillRect(content_rect, flash_color)
 
         # Let the style draw selection, hover, borders
-        self.parent().style().drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, self.parent())
+        self.parent().style().drawControl(
+            QStyle.ControlElement.CE_ItemViewItem, opt, painter, self.parent()
+        )
 
         # Now draw text manually with custom colors
         painter.save()
 
         leading_marker = index.data(LEADING_MARKER_ROLE)
-        text_rect = option.rect
+        text_rect = self._text_rect(option, index)
         if isinstance(leading_marker, ListItemLeadingMarker):
             self._paint_leading_marker(
                 painter,
@@ -160,10 +229,19 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
             )
         try:
             painter.setClipRect(text_rect)
+            if self._has_disclosure(index):
+                disclosure = QStyleOptionViewItem(option)
+                disclosure.rect = self.disclosure_rect(option, index)
+                disclosure.state = QStyle.StateFlag.State_Children | QStyle.StateFlag.State_Enabled
+                if self._row_wraps(index):
+                    disclosure.state |= QStyle.StateFlag.State_Open
+                self.parent().style().drawPrimitive(
+                    QStyle.PrimitiveElement.PE_IndicatorBranch, disclosure, painter, self.parent()
+                )
             self._prepared_text(option, index).paint(
                 painter,
                 QPointF(
-                    text_rect.left() + self.TEXT_INSET_X + self._marker_gutter(index),
+                    text_rect.left() + self.TEXT_INSET_X + self._text_gutter(index),
                     text_rect.top() + self.TEXT_INSET_Y,
                 ),
             )
@@ -220,7 +298,9 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         painter.drawPolygon(triangle)
         painter.restore()
 
-    def _paint_scope_background(self, painter: QPainter, content_rect: QRect, scheme, layers) -> None:
+    def _paint_scope_background(
+        self, painter: QPainter, content_rect: QRect, scheme, layers
+    ) -> None:
         """Paint background matching border colors.
 
         If single layer: solid color matching border.
@@ -262,7 +342,9 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
 
             painter.restore()
 
-    def _paint_checkerboard_flash(self, painter: QPainter, content_rect: QRect, flash_color: QColor) -> None:
+    def _paint_checkerboard_flash(
+        self, painter: QPainter, content_rect: QRect, flash_color: QColor
+    ) -> None:
         """Paint flash effect as checkerboard for multi-layer items."""
         cell_size = 8
         painter.save()
@@ -344,6 +426,71 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
             return get_scope_visual_config().LIST_ITEM_LEADING_MARKER_GUTTER_WIDTH_PX
         return 0
 
+    def _has_disclosure(self, index: QModelIndex) -> bool:
+        return PreviewWrapMode.available(self.parent(), index)
+
+    def _text_gutter(self, index: QModelIndex) -> int:
+        return self._marker_gutter(index) + (
+            self.DISCLOSURE_WIDTH if self._has_disclosure(index) else 0
+        )
+
+    def _row_wraps(self, index: QModelIndex) -> bool:
+        return PreviewWrapMode.for_index(self.parent(), index).wrapped
+
+    def _text_rect(self, option: QStyleOptionViewItem, index: QModelIndex) -> QRect:
+        """Wrapped rows stay readable while another row scrolls horizontally."""
+        rect = QRect(option.rect)
+        if self._row_wraps(index):
+            rect.setLeft(0)
+            rect.setWidth(self.parent().viewport().width())
+        return rect
+
+    def disclosure_rect(self, option: QStyleOptionViewItem, index: QModelIndex) -> QRect:
+        """One first-line target shared by native painting and mouse handling."""
+        if not self._has_disclosure(index):
+            return QRect()
+        text_rect = self._text_rect(option, index)
+        prepared = self._prepared_text(option, index)
+        first_line_height = prepared.paragraphs[0].lineAt(0).height()
+        return QRect(
+            text_rect.left() + self.TEXT_INSET_X + self._marker_gutter(index),
+            text_rect.top() + self.TEXT_INSET_Y,
+            self.DISCLOSURE_WIDTH,
+            max(1, round(first_line_height)),
+        )
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        """Consume disclosure clicks before QListView selection/drag/activation."""
+        if event.type() not in {
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+            QEvent.Type.MouseButtonDblClick,
+            QEvent.Type.MouseMove,
+        }:
+            return super().eventFilter(watched, event)
+        view = self.parent()
+        if watched is not view.viewport():
+            return super().eventFilter(watched, event)
+        if event.type() == QEvent.Type.MouseMove and self._pressed_disclosure.isValid():
+            return True
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().eventFilter(watched, event)
+        index = view.indexAt(event.position().toPoint())
+        option = QStyleOptionViewItem()
+        option.initFrom(view)
+        option.font = view.font()
+        option.rect = view.visualRect(index)
+        hit = self.disclosure_rect(option, index).contains(event.position().toPoint())
+        if event.type() != QEvent.Type.MouseButtonRelease:
+            if hit:
+                self._pressed_disclosure = QPersistentModelIndex(index)
+            return hit
+        pressed = self._pressed_disclosure
+        self._pressed_disclosure = QPersistentModelIndex()
+        if hit and pressed == index:
+            PreviewWrapMode.toggle(view, index)
+        return pressed.isValid()
+
     def _prepared_text(self, option: QStyleOptionViewItem, index) -> PreparedTextLayout:
         """Use identical fonts, field markers and available width in both passes."""
         opt = QStyleOptionViewItem(option)
@@ -354,12 +501,10 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         layout = index.data(LAYOUT_ROLE)
         width = None
-        if self.parent().wordWrap():
+        if self._row_wraps(index):
             width = max(
                 1,
-                self.parent().viewport().width()
-                - self.TEXT_INSET_X * 2
-                - self._marker_gutter(index),
+                self.parent().viewport().width() - self.TEXT_INSET_X * 2 - self._text_gutter(index),
             )
         return self._text_renderer.prepare(
             layout if isinstance(layout, StyledTextLayout) else opt.text,
@@ -373,11 +518,11 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
             width,
         )
 
-    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:  # noqa: N802 - Qt virtual method
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # noqa: N802
         """Measure the exact glyph layout painted in this viewport."""
         prepared = self._prepared_text(option, index)
-        width = prepared.size.width() + self.TEXT_INSET_X * 2 + self._marker_gutter(index)
-        if self.parent().wordWrap():
+        width = prepared.size.width() + self.TEXT_INSET_X * 2 + self._text_gutter(index)
+        if self._row_wraps(index):
             width = self.parent().viewport().width()
         return QSize(
             width,
