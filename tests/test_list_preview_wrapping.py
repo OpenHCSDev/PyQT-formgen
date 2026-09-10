@@ -274,7 +274,7 @@ def test_mixed_rows_resize_scroll_and_keep_wrapped_text_reachable(qtbot, preview
     assert rect.left() >= 0
     assert (
         view.itemDelegate()
-        ._text_rect(row_option(view, wrapped), view.indexFromItem(wrapped))
+        ._row_rect(row_option(view, wrapped), view.indexFromItem(wrapped))
         .width()
         == view.viewport().width()
     )
@@ -314,11 +314,11 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
     before = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
     view.horizontalScrollBar().setValue(view.horizontalScrollBar().maximum())
     after = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
+    evidence = Path("test-artifacts/wrapped-row-scroll") / str(focused)
+    evidence.mkdir(parents=True, exist_ok=True)
+    before.save(str(evidence / "before.png"))
+    after.save(str(evidence / "after.png"))
     if before != after:
-        evidence = Path("test-artifacts/wrapped-row-scroll")
-        evidence.mkdir(parents=True, exist_ok=True)
-        before.save(str(evidence / "before.png"))
-        after.save(str(evidence / "after.png"))
         view.viewport().repaint()
         repainted = (
             view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)

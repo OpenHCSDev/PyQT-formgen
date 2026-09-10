@@ -180,7 +180,7 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         self.initStyleOption(opt, index)
         # A wrapped row owns one viewport-anchored paint frame for native style,
         # flash/background, marker and text, independent of other rows' overflow.
-        opt.rect = self._text_rect(option, index)
+        opt.rect = self._row_rect(option, index)
 
         # Capture text and prevent default text draw
         opt.text = ""
@@ -228,7 +228,7 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         painter.save()
 
         leading_marker = index.data(LEADING_MARKER_ROLE)
-        text_rect = self._text_rect(option, index)
+        text_rect = opt.rect
         if isinstance(leading_marker, ListItemLeadingMarker):
             self._paint_leading_marker(
                 painter,
@@ -239,8 +239,8 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         try:
             painter.setClipRect(text_rect)
             if self._has_disclosure(index):
-                disclosure = QStyleOptionViewItem(option)
-                disclosure.rect = self.disclosure_rect(option, index)
+                disclosure = QStyleOptionViewItem(opt)
+                disclosure.rect = self.disclosure_rect(opt, index)
                 disclosure.state = QStyle.StateFlag.State_Children
                 if PreviewWrapMode.interactive(self.parent(), index):
                     disclosure.state |= QStyle.StateFlag.State_Enabled
@@ -249,7 +249,7 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
                 self.parent().style().drawPrimitive(
                     QStyle.PrimitiveElement.PE_IndicatorBranch, disclosure, painter, self.parent()
                 )
-            self._prepared_text(option, index).paint(
+            self._prepared_text(opt, index).paint(
                 painter,
                 QPointF(
                     text_rect.left() + self.TEXT_INSET_X + self._text_gutter(index),
@@ -448,8 +448,8 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
     def _row_wraps(self, index: QModelIndex) -> bool:
         return PreviewWrapMode.for_index(self.parent(), index).wrapped
 
-    def _text_rect(self, option: QStyleOptionViewItem, index: QModelIndex) -> QRect:
-        """Wrapped rows stay readable while another row scrolls horizontally."""
+    def _row_rect(self, option: QStyleOptionViewItem, index: QModelIndex) -> QRect:
+        """One row frame for native decoration, flash, content and disclosure hits."""
         rect = QRect(option.rect)
         if self._row_wraps(index):
             rect.setLeft(0)
@@ -460,7 +460,7 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         """One first-line target shared by native painting and mouse handling."""
         if not self._has_disclosure(index):
             return QRect()
-        text_rect = self._text_rect(option, index)
+        text_rect = self._row_rect(option, index)
         prepared = self._prepared_text(option, index)
         first_line_height = prepared.paragraphs[0].lineAt(0).height()
         return QRect(
