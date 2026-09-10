@@ -5,9 +5,8 @@ Single source of truth for reorderable list widgets across PipelineEditor,
 PlateManager, and other widgets.
 """
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPaintEvent
 from PyQt6.QtWidgets import QListWidget
+from PyQt6.QtCore import pyqtSignal, Qt
 
 
 class ReorderableListWidget(QListWidget):
@@ -46,16 +45,7 @@ class ReorderableListWidget(QListWidget):
         self.doItemsLayout()
         self.viewport().update()
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt virtual method
-        """Keep the Python owner alive for the complete native paint operation.
-
-        A delegate callback can trigger cyclic collection while Qt borrows this
-        widget. This frame roots ``self`` until QListWidget finishes painting,
-        including work after the last delegate returns.
-        """
-        super().paintEvent(event)
-
-    def dropEvent(self, event):  # noqa: N802 - Qt virtual method
+    def dropEvent(self, event):
         """Handle drop event and emit signal with indices."""
         # Get the source index before the drop
         source_items = self.selectedItems()
