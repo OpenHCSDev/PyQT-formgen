@@ -3229,6 +3229,23 @@ class _GlobalFlashCoordinator(QObject):
         self._maybe_stop_timer()
 
 
+class _DestructionCallback(QObject):
+    """Deliver cleanup through a Qt-owned slot for the sender's native lifetime.
+
+    A free Python callable proxy can be GC-cleared before Qt emits destroyed
+    while collecting widget cycles. Qt owns this receiver and its connection.
+    """
+
+    def __init__(self, owner: QObject, callback: Callable[[], None]) -> None:
+        super().__init__(owner)
+        self._callback = callback
+        owner.destroyed.connect(self._invoke)
+
+    @pyqtSlot()
+    def _invoke(self) -> None:
+        self._callback()
+
+
 class VisualUpdateMixin:
     """Mixin providing batched visual updates at 60fps.
 
@@ -3420,7 +3437,8 @@ class VisualUpdateMixin:
             if lifecycle_key in self._flash_registration_lifecycle_keys:
                 continue
             self._flash_registration_lifecycle_keys.add(lifecycle_key)
-            lifecycle_widget.destroyed.connect(
+            _DestructionCallback(
+                lifecycle_widget,
                 partial(
                     VisualUpdateMixin._cleanup_flash_registration,
                     registrations,
