@@ -1,9 +1,21 @@
 """Tests for shared parameter help introspection."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Annotated
 
-from pyqt_reactive.services.parameter_help_service import parameter_help_content
+from pyqt_reactive.services.parameter_help_service import (
+    dataclass_parameter_descriptions,
+    parameter_help_content,
+)
+from pyqt_reactive.strategies.preview_formatting import FormattingConfig
+
+
+def test_preview_policy_fields_include_authored_help_for_hidden_controls() -> None:
+    descriptions = dataclass_parameter_descriptions(FormattingConfig)
+    assert set(descriptions) == {field.name for field in fields(FormattingConfig)}
+    assert {
+        name for name, description in descriptions.items() if not (description or "").strip()
+    } == set()
 
 
 def test_dataclass_docstring_help_falls_back_when_source_is_unavailable(monkeypatch):

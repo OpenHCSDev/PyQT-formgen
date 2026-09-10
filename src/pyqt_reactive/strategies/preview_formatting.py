@@ -64,11 +64,22 @@ class FormattingConfig:
     """Maximum characters per value, with an ellipsis for longer values; zero shows all text."""
 
     group_separator: str = field(default=" | ", metadata={"ui_hidden": True})
+    """Text before each labelled configuration group after the first group."""
+
     field_separator: str = field(default=", ", metadata={"ui_hidden": True})
+    """Text between successive field values within one configuration group."""
+
     closing_brace_separator: str = field(default="", metadata={"ui_hidden": True})
+    """Text before the closing brace of each labelled configuration group."""
+
     container_abbr_func: Callable[[type], str] = field(
         default=get_group_abbreviation, metadata={"ui_hidden": True}
     )
+    """Function mapping a configuration declaration type to its preview heading.
+
+    The default resolves the registered abbreviation through the declaration's
+    method resolution order, or uses its class name before the first underscore.
+    """
 
     def __post_init__(self) -> None:
         if self.max_value_length < 0:
