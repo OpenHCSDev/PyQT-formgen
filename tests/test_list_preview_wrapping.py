@@ -319,6 +319,11 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
         view.activateWindow()
         view.setFocus()
         qtbot.waitUntil(view.hasFocus)
+    # Native Windows recomputes hovered rows on scroll. Keep the pointer on the
+    # scrollbar so this test compares the same interaction state on both sides.
+    scrollbar = view.horizontalScrollBar()
+    qtbot.mouseMove(scrollbar, pos=scrollbar.rect().center())
+    qtbot.waitUntil(lambda: not view.viewport().underMouse())
     capture_height = min(view.visualItemRect(wrapped).height(), view.viewport().height())
     before = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
     before_frames = tuple(native_frames)
@@ -366,6 +371,9 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
                 "row_rect": view.visualItemRect(wrapped).getRect(),
             },
         )
+    assert {frame for frame in before_frames if frame[0][1] == 0} == {
+        frame for frame in native_frames if frame[0][1] == 0
+    }
     assert before == after
     assert any(
         after.pixelColor(x, y).red() > 150 and after.pixelColor(x, y).green() < 100
