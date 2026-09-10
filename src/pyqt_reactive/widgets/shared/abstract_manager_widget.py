@@ -38,7 +38,7 @@ from objectstate import DottedFieldPath, ObjectStateRegistry, patch_lazy_constru
 from pyqt_reactive.widgets.mixins import (
     CrossWindowPreviewMixin,
 )
-from pyqt_reactive.strategies import (
+from pyqt_reactive.strategies.preview_formatting import (
     FormattingConfig,
     ObjectStatePreviewFormattingService,
 )
