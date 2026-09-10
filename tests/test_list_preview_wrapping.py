@@ -39,6 +39,34 @@ def preview_list(qtbot):
     return view
 
 
+def test_delegate_requires_owning_list_view():
+    with pytest.raises(TypeError, match="parent"):
+        MultilinePreviewItemDelegate(QColor("black"), QColor("gray"), QColor("white"))
+
+
+@pytest.mark.parametrize("disable_view", [False, True])
+def test_disabled_disclosure_keeps_geometry_without_accepting_actions(
+    qtbot, preview_list, disable_view
+):
+    from pyqt_reactive.services.widget_tree_projection import TogglePreviewAction
+
+    view = preview_list
+    row = add_row(view)
+    view.doItemsLayout()
+    index = view.indexFromItem(row)
+    original_rect = arrow_rect(view, row)
+    if disable_view:
+        view.setEnabled(False)
+    else:
+        row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+    assert arrow_rect(view, row) == original_rect
+    assert not TogglePreviewAction().available(view, index)
+    qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=original_rect.center())
+    assert row.data(PREVIEW_WRAP_ROLE) is None
+    with pytest.raises(ValueError, match="enabled preview"):
+        TogglePreviewAction().invoke(view, index)
+
+
 def add_row(view, *, structured=True):
     text = "long_input_path/" * 35
     row = QListWidgetItem(text)

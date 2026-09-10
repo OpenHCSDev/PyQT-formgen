@@ -1,9 +1,9 @@
 """Completion delivery follows native Qt receiver and future lifetimes."""
 
-from concurrent.futures import Future
 import gc
 import threading
 import weakref
+from concurrent.futures import Future
 
 from PyQt6 import sip
 from PyQt6.QtCore import QCoreApplication, QEvent, QObject, QThread, pyqtSlot

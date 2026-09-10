@@ -85,10 +85,18 @@ class PreviewWrapMode(Enum):
         return cls(view.wordWrap()) if mode is None else mode
 
     @classmethod
+    def interactive(cls, view: QAbstractItemView, index: QModelIndex) -> bool:
+        return (
+            cls.available(view, index)
+            and view.isEnabled()
+            and bool(index.flags() & Qt.ItemFlag.ItemIsEnabled)
+        )
+
+    @classmethod
     def toggle(cls, view: QAbstractItemView, index: QModelIndex) -> None:
         """Shared row mutation for native disclosure and structural UI actions."""
-        if not cls.available(view, index):
-            raise ValueError("This row does not declare a structured preview.")
+        if not cls.interactive(view, index):
+            raise ValueError("This row does not expose an enabled preview disclosure.")
         view.model().setData(
             index, cls(not cls.for_index(cast(QListView, view), index).wrapped), PREVIEW_WRAP_ROLE
         )
@@ -142,7 +150,7 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         name_color: QColor,
         preview_color: QColor,
         selected_text_color: QColor,
-        parent=None,
+        parent: QListView,
         manager=None,
     ):
         """Initialize delegate with color scheme.
@@ -232,7 +240,9 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
             if self._has_disclosure(index):
                 disclosure = QStyleOptionViewItem(option)
                 disclosure.rect = self.disclosure_rect(option, index)
-                disclosure.state = QStyle.StateFlag.State_Children | QStyle.StateFlag.State_Enabled
+                disclosure.state = QStyle.StateFlag.State_Children
+                if PreviewWrapMode.interactive(self.parent(), index):
+                    disclosure.state |= QStyle.StateFlag.State_Enabled
                 if self._row_wraps(index):
                     disclosure.state |= QStyle.StateFlag.State_Open
                 self.parent().style().drawPrimitive(
@@ -480,7 +490,9 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         option.initFrom(view)
         option.font = view.font()
         option.rect = view.visualRect(index)
-        hit = self.disclosure_rect(option, index).contains(event.position().toPoint())
+        hit = PreviewWrapMode.interactive(view, index) and self.disclosure_rect(
+            option, index
+        ).contains(event.position().toPoint())
         if event.type() != QEvent.Type.MouseButtonRelease:
             if hit:
                 self._pressed_disclosure = QPersistentModelIndex(index)

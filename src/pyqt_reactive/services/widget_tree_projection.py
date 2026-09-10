@@ -91,7 +91,7 @@ class SelectItemAction(ItemActionABC):
 
 class TogglePreviewAction(ItemActionABC):
     def available(self, view: QAbstractItemView, index: QModelIndex) -> bool:
-        return PreviewWrapMode.available(view, index)
+        return PreviewWrapMode.interactive(view, index)
 
     def invoke(self, view: QAbstractItemView, index: QModelIndex) -> None:
         PreviewWrapMode.toggle(view, index)
