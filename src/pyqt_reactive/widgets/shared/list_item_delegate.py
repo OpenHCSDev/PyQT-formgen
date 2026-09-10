@@ -178,6 +178,9 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         # Prepare a copy to let style draw backgrounds, hover, selection, borders, etc.
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
+        # A wrapped row owns one viewport-anchored paint frame for native style,
+        # flash/background, marker and text, independent of other rows' overflow.
+        opt.rect = self._text_rect(option, index)
 
         # Capture text and prevent default text draw
         opt.text = ""
@@ -190,9 +193,7 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
             layers = scheme.step_border_layers
             if layers:
                 border_inset = sum(layer[0] for layer in layers)
-        content_rect = option.rect.adjusted(
-            border_inset, border_inset, -border_inset, -border_inset
-        )
+        content_rect = opt.rect.adjusted(border_inset, border_inset, -border_inset, -border_inset)
 
         # Scope-based background: match border colors (only when not selected)
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)

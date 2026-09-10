@@ -286,7 +286,10 @@ def test_mixed_rows_resize_scroll_and_keep_wrapped_text_reachable(qtbot, preview
     qtbot.waitUntil(lambda: view.visualItemRect(wrapped).height() < old_height)
 
 
-def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(qtbot, preview_list):
+@pytest.mark.parametrize("focused", [False, True])
+def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
+    qtbot, preview_list, focused
+):
     from pathlib import Path
 
     from pyqt_reactive.widgets.shared.list_item_delegate import OBJECT_STATE_PATH_ROLE
@@ -303,6 +306,10 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(qtb
     view.itemDelegate()._manager = ActiveRowFlash()
     view.doItemsLayout()
     view.clearSelection()
+    if focused:
+        view.activateWindow()
+        view.setFocus()
+        qtbot.waitUntil(view.hasFocus)
     capture_height = min(view.visualItemRect(wrapped).height(), view.viewport().height())
     before = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
     view.horizontalScrollBar().setValue(view.horizontalScrollBar().maximum())
