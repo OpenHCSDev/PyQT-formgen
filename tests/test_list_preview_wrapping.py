@@ -315,10 +315,13 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
     view.itemDelegate()._manager = ActiveRowFlash()
     view.doItemsLayout()
     view.clearSelection()
+    view.activateWindow()
+    qtbot.waitUntil(view.isActiveWindow)
     if focused:
-        view.activateWindow()
         view.setFocus()
         qtbot.waitUntil(view.hasFocus)
+    else:
+        view.clearFocus()
     # Native Windows recomputes hovered rows on scroll. Keep the pointer on the
     # scrollbar so this test compares the same interaction state on both sides.
     scrollbar = view.horizontalScrollBar()
