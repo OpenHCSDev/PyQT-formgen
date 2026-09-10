@@ -9,11 +9,7 @@ def join_segments(segments: List["Segment"], default_sep: str) -> str:
     out: List[str] = []
     for index, segment in enumerate(segments):
         if index > 0:
-            out.append(
-                segment.sep_before
-                if segment.sep_before is not None
-                else default_sep
-            )
+            out.append(segment.sep_before if segment.sep_before is not None else default_sep)
         out.append(segment.text)
     return "".join(out)
 
@@ -39,6 +35,51 @@ class StyledTextLayout:
     preview_segments: List[Segment] = field(default_factory=list)
     config_segments: List[Segment] = field(default_factory=list)
     multiline: bool = False
+
+    def display_paragraphs(self) -> list[list[tuple[Segment, bool]]]:
+        """Project display syntax once for both Qt painting and size calculation.
+
+        The boolean marks primary (name/status) text; other spans use the
+        preview color. Original segments retain their field-level styling.
+        """
+        title = [(Segment(self.status_prefix + "▶ "), True), (self.name, True)]
+        inline = self.first_line_segments
+        if not self.multiline and not inline:
+            inline = self.preview_segments
+        if inline:
+            title += [(Segment("  ("), False)]
+            title += self._separated_spans(inline, " | ")
+            title += [(Segment(")"), False)]
+        paragraphs = [title]
+        if not self.multiline:
+            return paragraphs
+        if self.detail_line:
+            paragraphs.append([(Segment("  " + self.detail_line), False)])
+        if self.preview_segments or self.config_segments:
+            preview = [(Segment("  └─ "), False)]
+            preview += self._separated_spans(self.preview_segments, " | ")
+            if self.preview_segments and self.config_segments:
+                preview += [(Segment(" | "), False)]
+            if self.config_segments:
+                preview += [(Segment("configs=["), False)]
+                preview += self._separated_spans(self.config_segments, ", ")
+                preview += [(Segment("]"), False)]
+            paragraphs.append(preview)
+        return paragraphs
+
+    @staticmethod
+    def _separated_spans(segments: list[Segment], separator: str) -> list[tuple[Segment, bool]]:
+        spans = []
+        for index, segment in enumerate(segments):
+            if index:
+                spans.append(
+                    (
+                        Segment(separator if segment.sep_before is None else segment.sep_before),
+                        False,
+                    )
+                )
+            spans.append((segment, False))
+        return spans
 
     def all_segments(self) -> List[Segment]:
         """Get all segments for dirty/sig-diff field set storage."""
@@ -88,8 +129,5 @@ class StyledText(str):
     def segments(self) -> List[tuple]:
         """Backwards compat: return segments as list of tuples."""
         if self.layout:
-            return [
-                (segment.text, segment.field_path)
-                for segment in self.layout.all_segments()
-            ]
+            return [(segment.text, segment.field_path) for segment in self.layout.all_segments()]
         return []

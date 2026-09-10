@@ -5,7 +5,6 @@ from dataclasses import is_dataclass
 from pyqt_reactive.utils.preview_formatters import (
     PreviewFieldFormatRequest,
     check_enabled_field,
-    format_preview_value,
     resolve_field_abbreviation,
     resolve_preview_label,
 )
@@ -22,7 +21,7 @@ class ManagerPreviewFieldFormatter:
         if is_dataclass(request.value) and not isinstance(request.value, type):
             return self._format_dataclass_value(request)
 
-        formatted = format_preview_value(request.value)
+        formatted = request.value_formatter(request.value)
         if formatted is None:
             return None
         abbreviation = resolve_field_abbreviation(

@@ -436,7 +436,7 @@ class FunctionPatternCodeDocumentService:
                 for key, func_list in next_pattern.items()
             }
         return self._reconcile_function_list_tokens(
-            previous_pattern,
+            previous_pattern if not isinstance(previous_pattern, dict) else [],
             existing_tokens if isinstance(existing_tokens, list) else [],
             next_pattern,
             claimed_tokens=claimed_tokens,
@@ -712,6 +712,41 @@ class FunctionPatternCodeDocumentService:
                 previous_kwargs=old_value.kwargs,
                 next_kwargs=new_value.kwargs,
             )
+
+    def resolve_pattern_values(
+        self,
+        *,
+        parent_scope_id: str | None,
+        pattern: FunctionPatternList | FunctionPatternByKey,
+        tokens: PatternTokens,
+    ) -> FunctionPatternList | FunctionPatternByKey:
+        """Project editable kwargs from materialized child states, including hidden groups.
+
+        Entries without an opened child scope still take their values from the
+        declaration. Once materialized, the child ObjectState owns its edits;
+        cached pane kwargs are not another value authority.
+        """
+        if parent_scope_id is None:
+            return pattern
+        resolved = pattern
+        for entry in self.iter_tokenized_entries(pattern, tokens):
+            state = ObjectStateRegistry.get_by_scope(f"{parent_scope_id}::{entry.token}")
+            if state is None:
+                continue
+            if not self.same_function_authority(entry.func, state.object_instance):
+                raise FunctionPatternRoundTripError(
+                    f"Function token {entry.token!r} names a different callable."
+                )
+            resolved = self._replace_pattern_entry(
+                pattern=resolved,
+                tokens=tokens,
+                token=entry.token,
+                next_value=FunctionPatternValue(
+                    func=entry.func,
+                    kwargs=self.reconstruct_kwargs_from_state(state),
+                ),
+            )
+        return resolved
 
     @staticmethod
     def _entry_map(

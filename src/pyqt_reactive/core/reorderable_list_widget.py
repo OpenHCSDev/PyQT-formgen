@@ -28,10 +28,24 @@ class ReorderableListWidget(QListWidget):
         self.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        # Wrapped rows may be taller than the viewport; every line must remain reachable.
+        self.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         
-        # Enable word wrap for multiline items
-        self.setWordWrap(True)
+        self.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.setWordWrap(False)
         self.setTextElideMode(Qt.TextElideMode.ElideNone)
+
+    def setWordWrap(self, enabled: bool) -> None:  # noqa: N802 - Qt virtual method
+        """Reflow rows immediately and restore horizontal scrolling when disabled."""
+        super().setWordWrap(enabled)
+        self.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff if enabled
+            else Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        if enabled:
+            self.horizontalScrollBar().setValue(0)
+        self.doItemsLayout()
+        self.viewport().update()
     
     def dropEvent(self, event):
         """Handle drop event and emit signal with indices."""
@@ -52,4 +66,3 @@ class ReorderableListWidget(QListWidget):
         # Only emit signal if position actually changed
         if source_index != target_index:
             self.items_reordered.emit(source_index, target_index)
-

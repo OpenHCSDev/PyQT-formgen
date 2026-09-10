@@ -1,6 +1,8 @@
 """Explicit function overrides survive projection of normally hidden parameters."""
 
-from objectstate import ObjectState
+from dataclasses import dataclass
+
+from objectstate import ObjectState, config
 from python_introspect import parameter_exclusions, set_parameter_exclusions
 
 from pyqt_reactive.services.function_pattern_code_document import (
@@ -9,7 +11,12 @@ from pyqt_reactive.services.function_pattern_code_document import (
 )
 
 
-def test_explicit_override_is_editable_without_exposing_other_runtime_parameters():
+def test_explicit_override_is_editable_without_exposing_other_runtime_parameters(monkeypatch):
+    @dataclass
+    class RootConfig:
+        pass
+
+    monkeypatch.setattr(config, "_base_config_type", RootConfig)
     def process(image, *, policy: float = 1.0, runtime_context=None):
         return image
 

@@ -42,9 +42,9 @@ from pyqt_reactive.services.function_pattern_code_document import (
     PatternTokens,
     TokenizedFunctionEntry,
 )
-from python_introspect import SignatureAnalyzer
+from python_introspect import callable_declaration_kwargs
 from pyqt_reactive.widgets.function_pane import FunctionPaneWidget
-from objectstate import ObjectStateRegistry
+from objectstate import ObjectStateRegistry, semantic_values_equal
 from pyqt_reactive.theming import ColorScheme, WidgetTheme
 from pyqt_reactive.forms.layout_constants import CURRENT_LAYOUT
 from pyqt_reactive.forms.ui_utils import format_enum_display
@@ -530,74 +530,14 @@ class FunctionListEditorWidget(DetachableActionBarHost, QWidget):
         self._refresh_component_button()
         self._update_navigation_buttons()
 
-    def _initialize_pattern_data(self, initial_functions):
-        """Initialize pattern data from various input formats (mirrors Textual TUI logic)."""
-        # Load persisted sidecar tokens and seed generator so new tokens never collide.
-        self._load_pattern_tokens_from_state()
+    def _initialize_pattern_data(self, initial_functions, *, pattern_tokens=None):
+        """Normalize a declaration using persisted or explicitly reconciled tokens."""
+        if pattern_tokens is None:
+            self._load_pattern_tokens_from_state()
+        else:
+            self._pattern_tokens = pattern_tokens
         self._seed_func_token_generator()
-        if initial_functions is None:
-            self.pattern_data = []
-            self._pattern_tokens = []
-            self.is_dict_mode = False
-            self.functions = []
-            self._current_function_tokens = []
-        elif callable(initial_functions):
-            # Single callable: treat as [(callable, {})]
-            existing_tokens = self._canonical_function_scope_tokens(
-                [(initial_functions, {})],
-                None,
-                self._pattern_tokens if isinstance(self._pattern_tokens, list) else [],
-            )
-            if existing_tokens:
-                token = existing_tokens[0]
-            else:
-                token = self.pattern_code_documents.ensure_token()
-            self.pattern_data = [(initial_functions, {})]
-            self._pattern_tokens = [token]
-            self.is_dict_mode = False
-            self.functions = list(self.pattern_data)
-            self._current_function_tokens = [token]
-        elif (
-            isinstance(initial_functions, tuple)
-            and len(initial_functions) == 2
-            and callable(initial_functions[0])
-            and isinstance(initial_functions[1], dict)
-        ):
-            # Single tuple (callable, kwargs): treat as [(callable, kwargs)]
-            func, kwargs = initial_functions
-            clean_kwargs = self._sanitize_pattern_kwargs(kwargs)
-            existing_tokens = self._canonical_function_scope_tokens(
-                [(func, clean_kwargs)],
-                None,
-                self._pattern_tokens if isinstance(self._pattern_tokens, list) else [],
-            )
-            if existing_tokens:
-                token = existing_tokens[0]
-            else:
-                token = self.pattern_code_documents.ensure_token()
-            self.pattern_data = [(func, clean_kwargs)]
-            self._pattern_tokens = [str(token)]
-            self.is_dict_mode = False
-            self.functions = list(self.pattern_data)
-            self._current_function_tokens = [str(token)]
-        elif isinstance(initial_functions, list):
-            seen_tokens: set[str] = set()
-            self.is_dict_mode = False
-            seed_tokens = self._pattern_tokens if isinstance(self._pattern_tokens, list) else []
-            seed_tokens = self._canonical_function_scope_tokens(
-                initial_functions,
-                None,
-                seed_tokens,
-            )
-            self.functions, tokens = self._normalize_function_list(
-                initial_functions,
-                seen_tokens=seen_tokens,
-                seed_tokens=seed_tokens,
-            )
-            self._pattern_tokens = list(tokens)
-            self._current_function_tokens = list(tokens)
-            self.pattern_data = list(self.functions)
-        elif isinstance(initial_functions, dict):
+        if isinstance(initial_functions, dict):
             # Convert any integer keys to string keys for consistency
             seen_tokens: set[str] = set()
             normalized_dict = {}
@@ -606,19 +546,12 @@ class FunctionListEditorWidget(DetachableActionBarHost, QWidget):
             for key, value in initial_functions.items():
                 str_key = str(key)
                 seed_tokens = existing_tokens.get(str_key, [])
-                seed_tokens = self._canonical_function_scope_tokens(
-                    value,
-                    str_key,
-                    seed_tokens,
-                )
-                normalized_list, channel_tokens = (
-                    self._normalize_function_list(
-                        value,
-                        seen_tokens=seen_tokens,
-                        seed_tokens=seed_tokens,
+                if pattern_tokens is None:
+                    seed_tokens = self._canonical_function_scope_tokens(
+                        value, str_key, seed_tokens,
                     )
-                    if value
-                    else ([], [])
+                normalized_list, channel_tokens = self._normalize_function_list(
+                    value, seen_tokens=seen_tokens, seed_tokens=seed_tokens,
                 )
                 normalized_dict[str_key] = normalized_list
                 normalized_tokens[str_key] = channel_tokens
@@ -627,24 +560,30 @@ class FunctionListEditorWidget(DetachableActionBarHost, QWidget):
             self._pattern_tokens = normalized_tokens
             self.is_dict_mode = True
 
-            # Set selected channel to first key and load its functions
+            # Preserve a selected group when its declaration still exists.
             if normalized_dict:
-                self.selected_pattern_key = next(iter(normalized_dict.keys()))
+                if self.selected_pattern_key not in normalized_dict:
+                    self.selected_pattern_key = next(iter(normalized_dict))
                 self.functions = normalized_dict[self.selected_pattern_key]
-                self._current_function_tokens = list(
-                    normalized_tokens.get(self.selected_pattern_key, [])
-                )
+                self._current_function_tokens = list(normalized_tokens[self.selected_pattern_key])
             else:
                 self.selected_pattern_key = None
                 self.functions = []
                 self._current_function_tokens = []
         else:
-            logger.warning(f"Unknown initial_functions type: {type(initial_functions)}")
-            self.pattern_data = []
-            self._pattern_tokens = []
+            seed_tokens = self._pattern_tokens if isinstance(self._pattern_tokens, list) else []
+            if pattern_tokens is None:
+                seed_tokens = self._canonical_function_scope_tokens(
+                    initial_functions, None, seed_tokens,
+                )
+            self.functions, tokens = self._normalize_function_list(
+                initial_functions, seed_tokens=seed_tokens,
+            )
+            self.pattern_data = list(self.functions)
+            self._pattern_tokens = list(tokens)
+            self._current_function_tokens = list(tokens)
             self.is_dict_mode = False
-            self.functions = []
-            self._current_function_tokens = []
+            self.selected_pattern_key = None
 
         self._persist_pattern_tokens_to_state()
         self._apply_pending_pattern_key_selection()
@@ -1173,6 +1112,7 @@ class FunctionListEditorWidget(DetachableActionBarHost, QWidget):
 
     def _generate_complete_python_code(self) -> str:
         """Generate complete Python code with imports (following debug module approach)."""
+        self._update_pattern_data()
         # Disable clean_mode to preserve all parameters when same function appears multiple times
         # This prevents parsing issues when the same function has different parameter sets
         return self.pattern_code_documents.generate_complete_function_pattern_code(
@@ -1209,117 +1149,17 @@ class FunctionListEditorWidget(DetachableActionBarHost, QWidget):
             self._apply_edited_pattern_internal(new_pattern)
 
     def _apply_edited_pattern_internal(self, new_pattern):
-        """Internal implementation of apply_edited_pattern (wrapped in atomic block)."""
-        try:
-            self._seed_func_token_generator()
-            old_entries = self._iter_tokenized_entries(self.pattern_data, self._pattern_tokens)
-            reconciled_tokens = self.pattern_code_documents.reconcile_pattern_tokens(
-                self.pattern_data,
-                self._pattern_tokens,
-                new_pattern,
-            )
-
-            # Get the new function list BEFORE updating self.functions
-            if self.is_dict_mode:
-                if isinstance(new_pattern, dict):
-                    # Normalize whole dict so all keys have stable per-entry tokens.
-                    seen_tokens: set[str] = set()
-                    normalized_pattern: dict[str, list] = {}
-                    normalized_tokens: Dict[str, List[str]] = {}
-                    seed_by_channel = (
-                        reconciled_tokens if isinstance(reconciled_tokens, dict) else {}
-                    )
-                    for k, v in new_pattern.items():
-                        sk = str(k)
-                        normalized_list, token_list = (
-                            self._normalize_function_list(
-                                v,
-                                seen_tokens=seen_tokens,
-                                seed_tokens=seed_by_channel.get(sk, []),
-                            )
-                            if v
-                            else ([], [])
-                        )
-                        normalized_pattern[sk] = normalized_list
-                        normalized_tokens[sk] = token_list
-                    new_pattern = normalized_pattern
-
-                    if self.selected_pattern_key and self.selected_pattern_key in new_pattern:
-                        new_functions = list(new_pattern[self.selected_pattern_key])
-                        new_current_tokens = list(
-                            normalized_tokens.get(self.selected_pattern_key, [])
-                        )
-                    elif new_pattern:
-                        new_channel = next(iter(new_pattern))
-                        new_functions = list(new_pattern[new_channel])
-                        new_current_tokens = list(normalized_tokens.get(new_channel, []))
-                    else:
-                        new_functions = []
-                        new_current_tokens = []
-                else:
-                    raise ValueError("Expected dict pattern for dict mode")
-            else:
-                seed_tokens = reconciled_tokens if isinstance(reconciled_tokens, list) else []
-                if isinstance(new_pattern, list):
-                    new_functions, new_current_tokens = self._normalize_function_list(
-                        new_pattern,
-                        seed_tokens=seed_tokens,
-                    )
-                elif callable(new_pattern):
-                    new_functions = [(new_pattern, {})]
-                    new_current_tokens = list(seed_tokens)
-                elif (
-                    isinstance(new_pattern, tuple)
-                    and len(new_pattern) == 2
-                    and callable(new_pattern[0])
-                    and isinstance(new_pattern[1], dict)
-                ):
-                    func, kwargs = new_pattern
-                    new_functions = [(func, self._sanitize_pattern_kwargs(kwargs))]
-                    new_current_tokens = list(seed_tokens)
-                else:
-                    raise ValueError(
-                        f"Expected list, callable, or (callable, dict) tuple pattern for list mode, got {type(new_pattern)}"
-                    )
-
-            # CRITICAL FIX: Update existing function ObjectStates with new kwargs BEFORE
-            # creating new widgets. This preserves dirty detection - the ObjectState's
-            # saved baseline stays the same, only the current values change.
-            if self.is_dict_mode:
-                new_entries = self._iter_tokenized_entries(new_pattern, normalized_tokens)
-            else:
-                new_entries = self._iter_tokenized_entries(new_functions, new_current_tokens)
-            self._update_function_object_states(old_entries, new_entries)
-
-            # Now update pattern_data and functions
-            if self.is_dict_mode:
-                self.pattern_data = new_pattern
-                self._pattern_tokens = normalized_tokens
-                if self.selected_pattern_key and self.selected_pattern_key in new_pattern:
-                    self.functions = new_functions
-                elif new_pattern:
-                    self.selected_pattern_key = next(iter(new_pattern))
-                    self.functions = new_functions
-                else:
-                    self.functions = []
-                self._current_function_tokens = new_current_tokens
-            else:
-                # Always store normalized list.
-                self.pattern_data = list(new_functions)
-                self.functions = new_functions
-                self._pattern_tokens = list(new_current_tokens)
-                self._current_function_tokens = list(new_current_tokens)
-
-            self._persist_pattern_tokens_to_state()
-
-            # Refresh the UI and notify of changes
-            # NOTE: _populate_function_list will REUSE ObjectStates that we just updated
-            self._populate_function_list()
-            self._emit_pattern_changed()
-
-        except Exception as e:
-            if self.service_adapter:
-                self.service_adapter.show_error_dialog(f"Failed to apply edited pattern: {str(e)}")
+        """Reconcile occurrence identity, normalize once, then refresh existing states."""
+        self._update_pattern_data()
+        old_entries = self._iter_tokenized_entries(self.pattern_data, self._pattern_tokens)
+        reconciled_tokens = self.pattern_code_documents.reconcile_pattern_tokens(
+            self.pattern_data, self._pattern_tokens, new_pattern,
+        )
+        self._initialize_pattern_data(new_pattern, pattern_tokens=reconciled_tokens)
+        new_entries = self._iter_tokenized_entries(self.pattern_data, self._pattern_tokens)
+        self._update_function_object_states(old_entries, new_entries)
+        self._populate_function_list()
+        self._emit_pattern_changed()
 
     def _update_function_object_states(
         self,
@@ -1490,27 +1330,23 @@ class FunctionListEditorWidget(DetachableActionBarHost, QWidget):
     def current_pattern(self):
         """Get the current pattern data (for parent widgets to access)."""
         self._update_pattern_data()  # Ensure it's up to date
+        pattern = self.pattern_data
 
         def _prune_kwargs(
             func: FunctionAuthority,
             kwargs: FunctionKwargs,
         ) -> FunctionKwargs:
-            param_info = SignatureAnalyzer.analyze(func) if func else {}
-            pruned: FunctionKwargs = {}
-            for key, value in kwargs.items():
-                if value is None:
-                    continue
-                default_info = param_info.get(key)
-                if default_info is not None and value == default_info.default_value:
-                    continue
-                pruned[key] = value
-            return pruned
+            return callable_declaration_kwargs(
+                func,
+                {key: value for key, value in kwargs.items() if value is not None},
+                values_equal=semantic_values_equal,
+            )
 
         # Migration fix: Convert any integer keys to string keys for compatibility
         # with pattern detection system which always uses string component values
-        if isinstance(self.pattern_data, dict):
+        if isinstance(pattern, dict):
             migrated_pattern = {}
-            for key, value in self.pattern_data.items():
+            for key, value in pattern.items():
                 str_key = str(key)
                 normalized_list = []
                 for item in value:
@@ -1522,9 +1358,9 @@ class FunctionListEditorWidget(DetachableActionBarHost, QWidget):
                 migrated_pattern[str_key] = normalized_list
             return migrated_pattern
 
-        if isinstance(self.pattern_data, list):
+        if isinstance(pattern, list):
             normalized_list = []
-            for item in self.pattern_data:
+            for item in pattern:
                 func, kwargs = PatternDataManager.extract_func_and_kwargs(item)
                 if func is None:
                     continue
@@ -1536,7 +1372,7 @@ class FunctionListEditorWidget(DetachableActionBarHost, QWidget):
 
             return normalized_list
 
-        return self.pattern_data
+        return pattern
 
     def set_functions(self, functions):
         """Set function list and refresh display."""
@@ -2055,12 +1891,7 @@ class FunctionListEditorWidget(DetachableActionBarHost, QWidget):
             )
 
     def _update_pattern_data(self):
-        """Update pattern_data based on current functions and mode (mirrors Textual TUI)."""
-        # CRITICAL: Sync all function panes to get reconstructed kwargs from ObjectState
-        # before reading self.functions. Otherwise we get stale flattened kwargs!
-        for pane in self.function_panes:
-            pane.sync_kwargs()
-
+        """Project the current occurrence structure and ObjectState-owned values."""
         sanitized_functions = []
         for item in self.functions:
             func, kwargs = PatternDataManager.extract_func_and_kwargs(item)
@@ -2095,3 +1926,14 @@ class FunctionListEditorWidget(DetachableActionBarHost, QWidget):
             self.pattern_data = self.functions.copy()
             self._set_tokens_for_current_view(self._current_function_tokens)
         self._persist_pattern_tokens_to_state()
+        self.pattern_data = self.pattern_code_documents.resolve_pattern_values(
+            parent_scope_id=self.scope_id,
+            pattern=self.pattern_data,
+            tokens=self._pattern_tokens,
+        )
+        if self.is_dict_mode:
+            self.functions = (
+                list(self.pattern_data[self.selected_pattern_key]) if self.pattern_data else []
+            )
+        else:
+            self.functions = list(self.pattern_data)

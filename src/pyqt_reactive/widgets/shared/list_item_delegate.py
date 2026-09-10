@@ -9,8 +9,8 @@ import logging
 from dataclasses import dataclass
 
 from PyQt6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QStyle
-from PyQt6.QtGui import QPainter, QColor, QFont, QFontMetrics, QPen, QPolygon
-from PyQt6.QtCore import Qt, QRect, QPoint
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QPolygon
+from PyQt6.QtCore import Qt, QRect, QPoint, QPointF, QSize
 
 from pyqt_reactive.widgets.shared.scope_color_utils import tint_color_perceptual
 from pyqt_reactive.widgets.shared.scope_visual_config import (
@@ -19,7 +19,7 @@ from pyqt_reactive.widgets.shared.scope_visual_config import (
 )
 from pyqt_reactive.widgets.shared.list_item_text_rendering import (
     StyledTextRenderer,
-    StyledTextSizeCalculator,
+    PreparedTextLayout,
     TextMetricCache,
     TextPaintContext,
 )
@@ -76,6 +76,10 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
     - Configurable colors for normal/preview/selected text
     """
 
+    TEXT_INSET_X = 5
+    TEXT_INSET_Y = 3
+    MINIMUM_ROW_HEIGHT = 29
+
     def __init__(self, name_color: QColor, preview_color: QColor, selected_text_color: QColor,
                  parent=None, manager=None):
         """Initialize delegate with color scheme.
@@ -94,19 +98,15 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         self._manager = manager
         self._text_metric_cache = TextMetricCache()
         self._text_renderer = StyledTextRenderer(self._text_metric_cache)
-        self._size_calculator = StyledTextSizeCalculator(self._text_metric_cache)
         # NOTE: Flash rendering moved to WindowFlashOverlay for O(1) performance
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
         """Paint the item with multiline support and flash behind text."""
-        from PyQt6.QtGui import QFont, QFontMetrics
-
         # Prepare a copy to let style draw backgrounds, hover, selection, borders, etc.
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
 
         # Capture text and prevent default text draw
-        text = opt.text or ""
         opt.text = ""
 
         # Calculate border inset (used for background and flash)
@@ -149,27 +149,8 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         # Now draw text manually with custom colors
         painter.save()
 
-        is_disabled = index.data(Qt.ItemDataRole.UserRole + 1) or False
-
-        # Get structured layout - no string parsing needed!
-        layout = index.data(LAYOUT_ROLE)
-        dirty_fields = index.data(DIRTY_FIELDS_ROLE) or set()
-        sig_diff_fields = index.data(SIG_DIFF_FIELDS_ROLE) or set()
         leading_marker = index.data(LEADING_MARKER_ROLE)
-
-        base_font = QFont(option.font)
-        base_font.setStrikeOut(is_disabled)
-        base_font.setUnderline(False)
-
-        fm = QFontMetrics(base_font)
-        line_height = fm.height()
         text_rect = option.rect
-        visual_config = get_scope_visual_config()
-        marker_gutter_width = (
-            visual_config.LIST_ITEM_LEADING_MARKER_GUTTER_WIDTH_PX
-            if isinstance(leading_marker, ListItemLeadingMarker)
-            else 0
-        )
         if isinstance(leading_marker, ListItemLeadingMarker):
             self._paint_leading_marker(
                 painter,
@@ -177,29 +158,15 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
                 leading_marker,
                 is_selected=is_selected,
             )
-        x_start = text_rect.left() + 5 + marker_gutter_width
-        y_offset = text_rect.top() + fm.ascent() + 3
-
         try:
-            if isinstance(layout, StyledTextLayout):
-                name_color = self.selected_text_color if is_selected else self.name_color
-                preview_color = self.selected_text_color if is_selected else self.preview_color
-                self._text_renderer.paint_layout(
-                    painter,
-                    layout,
-                    TextPaintContext(
-                        dirty_fields=dirty_fields,
-                        sig_diff_fields=sig_diff_fields,
-                        base_font=base_font,
-                        name_color=name_color,
-                        preview_color=preview_color,
-                    ),
-                    x_start,
-                    y_offset,
-                    line_height,
-                )
-            else:
-                self._paint_plain_text_fallback(painter, text, base_font, x_start, y_offset, is_selected)
+            painter.setClipRect(text_rect)
+            self._prepared_text(option, index).paint(
+                painter,
+                QPointF(
+                    text_rect.left() + self.TEXT_INSET_X + self._marker_gutter(index),
+                    text_rect.top() + self.TEXT_INSET_Y,
+                ),
+            )
         finally:
             painter.restore()
 
@@ -252,20 +219,6 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
         )
         painter.drawPolygon(triangle)
         painter.restore()
-
-    def _paint_plain_text_fallback(
-        self,
-        painter: QPainter,
-        text: str,
-        base_font: QFont,
-        x_start: int,
-        y_offset: int,
-        is_selected: bool,
-    ) -> None:
-        """Paint rows that intentionally do not carry a structured text layout."""
-        painter.setFont(base_font)
-        painter.setPen(self.selected_text_color if is_selected else self.name_color)
-        painter.drawText(x_start, y_offset, text)
 
     def _paint_scope_background(self, painter: QPainter, content_rect: QRect, scheme, layers) -> None:
         """Paint background matching border colors.
@@ -386,13 +339,47 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
 
         painter.restore()
 
-    def sizeHint(self, option: QStyleOptionViewItem, index) -> 'QSize':
-        """Calculate size hint based on layout structure."""
-        # Get structured layout data
+    def _marker_gutter(self, index) -> int:
+        if isinstance(index.data(LEADING_MARKER_ROLE), ListItemLeadingMarker):
+            return get_scope_visual_config().LIST_ITEM_LEADING_MARKER_GUTTER_WIDTH_PX
+        return 0
+
+    def _prepared_text(self, option: QStyleOptionViewItem, index) -> PreparedTextLayout:
+        """Use identical fonts, field markers and available width in both passes."""
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        font = QFont(opt.font)
+        font.setStrikeOut(bool(index.data(Qt.ItemDataRole.UserRole + 1)))
+        font.setUnderline(False)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
         layout = index.data(LAYOUT_ROLE)
-        if layout is not None:
-            return self._size_calculator.from_layout(layout, option.font)
-        else:
-            # Fallback to text-based sizing
-            text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-            return self._size_calculator.from_text(text, option.font)
+        width = None
+        if self.parent().wordWrap():
+            width = max(
+                1,
+                self.parent().viewport().width()
+                - self.TEXT_INSET_X * 2
+                - self._marker_gutter(index),
+            )
+        return self._text_renderer.prepare(
+            layout if isinstance(layout, StyledTextLayout) else opt.text,
+            TextPaintContext(
+                dirty_fields=index.data(DIRTY_FIELDS_ROLE) or set(),
+                sig_diff_fields=index.data(SIG_DIFF_FIELDS_ROLE) or set(),
+                base_font=font,
+                name_color=self.selected_text_color if selected else self.name_color,
+                preview_color=self.selected_text_color if selected else self.preview_color,
+            ),
+            width,
+        )
+
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:  # noqa: N802 - Qt virtual method
+        """Measure the exact glyph layout painted in this viewport."""
+        prepared = self._prepared_text(option, index)
+        width = prepared.size.width() + self.TEXT_INSET_X * 2 + self._marker_gutter(index)
+        if self.parent().wordWrap():
+            width = self.parent().viewport().width()
+        return QSize(
+            width,
+            max(self.MINIMUM_ROW_HEIGHT, prepared.size.height() + self.TEXT_INSET_Y * 2),
+        )

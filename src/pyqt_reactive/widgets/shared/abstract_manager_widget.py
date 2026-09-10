@@ -515,7 +515,10 @@ class ManagerListUpdateWorkflowMixin:
         item_format = self.LIST_ITEM_FORMAT
         if item_format is None:
             return True
-        if item_format.append_signature_diff_fields:
+        config = self._preview_formatter.config
+        if config.show_active_configs or (
+            item_format.append_signature_diff_fields and config.show_modified_fields
+        ):
             return True
 
         display_paths = set(item_format.first_line)
@@ -546,6 +549,12 @@ class ManagerListUpdateWorkflowMixin:
             status_prefix=status_prefix,
             detail_line=detail_line,
         )
+
+    def set_preview_config(self, config: FormattingConfig) -> None:
+        """Apply one preview policy to formatting and layout, then refresh rows."""
+        self._preview_formatter.config = config
+        self.item_list.setWordWrap(config.wrap_lines)
+        self.update_item_list()
 
 
 class AbstractManagerWidget(

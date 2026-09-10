@@ -2542,7 +2542,7 @@ def test_flash_region_cache_reuses_steady_state_key_set(qapp, monkeypatch) -> No
     dialog.close()
 
 
-def test_visual_frame_callbacks_coalesce_by_owner(qapp) -> None:
+def test_visual_frame_callbacks_coalesce_by_owner(qapp, qtbot) -> None:
     """Shared visual-frame callbacks keep one pending update per owner."""
 
     from PyQt6.QtCore import QObject
@@ -2555,10 +2555,7 @@ def test_visual_frame_callbacks_coalesce_by_owner(qapp) -> None:
     queue_visual_frame_callback(owner, lambda: calls.append("first"))
     queue_visual_frame_callback(owner, lambda: calls.append("second"))
 
-    for _ in range(3):
-        qapp.processEvents()
-
-    assert calls == ["second"]
+    qtbot.waitUntil(lambda: calls == ["second"])
 
 
 def test_overlay_batches_multiple_keys_for_same_visual_source(qapp) -> None:

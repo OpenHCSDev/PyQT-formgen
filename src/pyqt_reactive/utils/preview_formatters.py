@@ -1,6 +1,9 @@
 """Generic preview formatting helpers."""
 
+from collections.abc import Callable, Collection, Mapping, MutableSequence, Sequence, Set
 from dataclasses import dataclass
+from enum import Enum, StrEnum
+from functools import singledispatch
 from types import FunctionType, MethodType
 from typing import cast
 
@@ -13,20 +16,6 @@ class PreviewLabelResolution:
 
     owner: type
     label: str
-
-
-@dataclass(frozen=True, slots=True)
-class PreviewFieldFormatRequest:
-    """One resolved value together with its ObjectState-recorded declaration."""
-
-    field_path: str
-    value: object
-    field_owner: ParameterOwner
-
-    @property
-    def field_name(self) -> str:
-        """Return the leaf field name declared by ``field_owner``."""
-        return self.field_path.rsplit(".", 1)[-1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,33 +74,76 @@ def check_enabled_field(config: object) -> bool:
     return cast(Enableable, config).enabled
 
 
-def format_preview_value(value: object) -> str | None:
-    """Format any value for preview display. Simple type-based, no field knowledge needed.
+class PreviewValueDetail(StrEnum):
+    """Collection display modes carry their own leaf formatting behavior."""
 
-    Args:
-        value: Any value to format
+    COMPACT = ("compact", lambda values: f"[{len(values)}]")
+    EXPANDED = ("expanded", repr)
 
-    Returns:
-        Formatted string or None if value should be skipped
-    """
-    from enum import Enum
+    def __new__(cls, value: str, formatter: Callable[[Collection], str]):
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._formatter = formatter
+        return member
 
-    if value is None:
-        return None
-    if isinstance(value, Enum):
-        if value.value is None:
-            return None  # Skip null enums like GroupBy.NONE
-        return value.name
-    if isinstance(value, list):
-        if not value:
-            return None
-        # List of enums: show values joined
-        if isinstance(value[0], Enum):
-            return ",".join(v.value for v in value)
-        # Other lists: show count
-        return f"[{len(value)}]"
-    if isinstance(value, (FunctionType, MethodType)):
-        return value.__name__
+    def format_collection(self, value: Collection) -> str:
+        return self._formatter(value)
+
+
+@singledispatch
+def format_preview_value(
+    value: object, detail: PreviewValueDetail = PreviewValueDetail.COMPACT
+) -> str | None:
+    """Project display values by nominal type, without knowing config field names."""
     if callable(value) and not isinstance(value, type):
         return type(value).__name__
     return str(value)
+
+
+@format_preview_value.register(type(None))
+def _format_absent(value, detail=PreviewValueDetail.COMPACT) -> None:
+    return None
+
+
+@format_preview_value.register(Enum)
+def _format_enum(value: Enum, detail=PreviewValueDetail.COMPACT) -> str | None:
+    return value.name if value.value is not None else None
+
+
+@format_preview_value.register(FunctionType)
+@format_preview_value.register(MethodType)
+def _format_function(value, detail=PreviewValueDetail.COMPACT) -> str:
+    return value.__name__
+
+
+@format_preview_value.register(Mapping)
+@format_preview_value.register(Set)
+def _format_collection(value: Collection, detail=PreviewValueDetail.COMPACT) -> str | None:
+    return detail.format_collection(value) if value else None
+
+
+@format_preview_value.register(MutableSequence)
+@format_preview_value.register(tuple)
+def _format_sequence(value: Sequence, detail=PreviewValueDetail.COMPACT) -> str | None:
+    if value and all(isinstance(element, Enum) for element in value):
+        return ",".join(str(element.value) for element in value)
+    return _format_collection(value, detail)
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewFieldFormatRequest:
+    """One resolved value together with its ObjectState-recorded declaration.
+
+    Standalone requests use the generic value formatter; a configured preview
+    service supplies its declaration-owned display policy.
+    """
+
+    field_path: str
+    value: object
+    field_owner: ParameterOwner
+    value_formatter: Callable[[object], str | None] = format_preview_value
+
+    @property
+    def field_name(self) -> str:
+        """Return the leaf field name declared by ``field_owner``."""
+        return self.field_path.rsplit(".", 1)[-1]

@@ -53,30 +53,6 @@ class NoScrollDoubleSpinBox(IgnoreWheelEventMixin, DoubleSpinBoxAdapter):
     Inherits from DoubleSpinBoxAdapter which already implements ValueGettable/ValueSettable ABCs.
     """
 
-    def textFromValue(self, value: float) -> str:
-        """Convert value to string without trailing zeros for clean display.
-
-        Users can still type additional digits when editing - this only affects
-        the display format, not the underlying precision.
-
-        Examples:
-            1.5 -> "1.5"
-            1.0 -> "1"
-            1.567 -> "1.567"
-            0.0001 -> "0.0001"
-        """
-        # Format with all available precision first
-        text = super().textFromValue(value)
-
-        # Remove trailing zeros after decimal point
-        if '.' in text:
-            text = text.rstrip('0').rstrip('.')
-
-        if text:
-            return text
-        return '0'
-
-
 class NoScrollComboBox(IgnoreWheelEventMixin, ComboBoxAdapter):
     """ComboBox that ignores wheel events to prevent accidental value changes.
 

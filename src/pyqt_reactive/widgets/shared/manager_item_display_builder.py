@@ -18,7 +18,11 @@ from pyqt_reactive.utils.preview_formatters import (
     PreviewFieldFormatRequest,
     canonical_declaration_mro,
 )
-from pyqt_reactive.widgets.shared.list_item_delegate import Segment, StyledText, StyledTextLayout
+from pyqt_reactive.widgets.shared.list_item_delegate import (
+    Segment,
+    StyledText,
+    StyledTextLayout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +48,8 @@ class ListItemFormat:
         )
         if invalid_paths:
             raise TypeError(
-                "List-item formatters must be callables for paths: " + ", ".join(invalid_paths)
+                "List-item formatters must be callables for paths: "
+                + ", ".join(invalid_paths)
             )
 
 
@@ -91,45 +96,56 @@ class _ManagerItemDisplayBuilder:
             item_format.formatters,
             self._field_formatter,
         )
+        config = self._preview_formatter.config
+        preview_paths = list(item_format.preview_line)
+        if config.show_active_configs:
+            preview_paths.extend(self._discover_always_viewable_fields(state))
+        if (
+            state is not None
+            and item_format.append_signature_diff_fields
+            and config.show_modified_fields
+        ):
+            existing_paths = (*item_format.first_line, *preview_paths)
+            modified_paths = self._signature_diff_fields(item)
+            preview_paths.extend(
+                path
+                for path in state.parameters
+                if path in modified_paths
+                and path != "name"
+                and not (
+                    state.has_parameter_descendants(path)
+                    and any(
+                        child != path and DottedFieldPath(path).contains_path(child)
+                        for child in (*existing_paths, *modified_paths)
+                    )
+                )
+                and not any(
+                    DottedFieldPath(existing).contains_path(path)
+                    for existing in existing_paths
+                )
+            )
+        # Select paths before formatting so each field and group is rendered once.
         preview_segments = self._preview_formatter.collect_and_render(
             state,
-            list(item_format.preview_line),
+            tuple(dict.fromkeys(preview_paths)),
             item_format.formatters,
             self._field_formatter,
         )
 
-        always_viewable = self._discover_always_viewable_fields(state)
-        if always_viewable:
-            logger.debug("PREVIEW: Adding always_viewable fields to preview: %s", always_viewable)
-            always_viewable_segments = self._preview_formatter.collect_and_render(
-                state,
-                list(always_viewable),
-                item_format.formatters,
-                self._field_formatter,
-            )
-            if preview_segments and always_viewable_segments:
-                first_seg = always_viewable_segments[0]
-                always_viewable_segments[0] = (first_seg[0], first_seg[1], " | ")
-            preview_segments.extend(always_viewable_segments)
-
-        if detail_line == "" and item_format.detail_line_field is not None and state is not None:
+        if (
+            detail_line == ""
+            and item_format.detail_line_field is not None
+            and state is not None
+        ):
             resolved_detail = state.get_resolved_value(item_format.detail_line_field)
             if resolved_detail is not None:
                 detail_line = str(resolved_detail)
-
-        if item_format.append_signature_diff_fields:
-            self._append_signature_diff_segments(
-                item=item,
-                state=state,
-                segments=preview_segments,
-                first_line_segments=first_line_segments,
-            )
 
         styled = self.build_multiline(
             item_name=item_name,
             segments=preview_segments,
             status_prefix=status_prefix,
-            detail_line=detail_line,
+            detail_line=detail_line if config.show_detail_line else "",
             first_line_segments=first_line_segments,
         )
         return styled
@@ -146,7 +162,9 @@ class _ManagerItemDisplayBuilder:
         layout = StyledTextLayout(
             name=Segment(text=item_name, field_path="", asterisk_prefix=True),
             status_prefix=status_prefix,
-            first_line_segments=self._create_segments_with_grouping(first_line_segments),
+            first_line_segments=self._create_segments_with_grouping(
+                first_line_segments
+            ),
             detail_line=detail_line,
             preview_segments=self._create_segments_with_grouping(
                 segments,
@@ -157,40 +175,6 @@ class _ManagerItemDisplayBuilder:
             multiline=True,
         )
         return StyledText(layout)
-
-    def _append_signature_diff_segments(
-        self,
-        *,
-        item: object,
-        state: ObjectState | None,
-        segments: list[PreviewSegment],
-        first_line_segments: list[PreviewSegment],
-    ) -> None:
-        if state is None:
-            return
-        sig_diff_fields = self._signature_diff_fields(item)
-        existing_paths = {field_path for _, field_path, _ in segments if field_path}
-        existing_paths.update(field_path for _, field_path, _ in first_line_segments if field_path)
-
-        sig_diff_paths_to_add = [
-            field_path
-            for field_path in sig_diff_fields
-            if field_path != "name"
-            and not any(DottedFieldPath(path).contains_path(field_path) for path in existing_paths)
-        ]
-        if not sig_diff_paths_to_add:
-            return
-
-        sig_diff_segments = self._preview_formatter.collect_and_render(
-            state,
-            sig_diff_paths_to_add,
-            {},
-            self._field_formatter,
-        )
-        if segments and sig_diff_segments:
-            first_label, first_path, _ = sig_diff_segments[0]
-            sig_diff_segments[0] = (first_label, first_path, " | ")
-        segments.extend(sig_diff_segments)
 
     def _discover_always_viewable_fields(
         self,

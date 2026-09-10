@@ -20,7 +20,7 @@ from enum import Enum
 from typing import Any
 
 try:
-    from PyQt6.QtCore import QObject
+    from PyQt6.QtCore import QLocale, QObject
     from PyQt6.QtGui import QKeySequence
     from PyQt6.QtWidgets import (
         QComboBox,
@@ -258,6 +258,19 @@ if PYQT6_AVAILABLE:
             self.setSpecialValueText(" ")
             self.setRange(-1e308, 1e308)  # Default float range
             self.setDecimals(WidgetConfig.FLOAT_PRECISION)  # Use configured precision
+
+        def textFromValue(self, value: float) -> str:  # noqa: N802 - Qt virtual method
+            """Display the shortest localized decimal that preserves the value."""
+            locale = self.locale()
+            options = locale.numberOptions()
+            if self.isGroupSeparatorShown():
+                options &= ~QLocale.NumberOption.OmitGroupSeparator
+            else:
+                options |= QLocale.NumberOption.OmitGroupSeparator
+            locale.setNumberOptions(options)
+            return locale.toString(
+                value, "f", QLocale.FloatingPointPrecisionOption.FloatingPointShortest
+            )
         
         def get_value(self) -> Any:
             """Implement ValueGettable ABC."""

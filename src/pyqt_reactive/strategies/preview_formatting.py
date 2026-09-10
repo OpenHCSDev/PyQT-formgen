@@ -10,7 +10,9 @@ from objectstate import DottedFieldPath, ParameterOwner
 
 from pyqt_reactive.utils.preview_formatters import (
     PreviewFieldFormatRequest,
+    PreviewValueDetail,
     canonical_declaration_mro,
+    format_preview_value,
 )
 
 if TYPE_CHECKING:
@@ -34,13 +36,49 @@ def get_group_abbreviation(config_type: type) -> str:
 
 @dataclass(frozen=True, slots=True)
 class FormattingConfig:
-    """Presentation rules for preview grouping and separators."""
+    """List-preview presentation derived from declared fields and ObjectState.
+
+    These rules affect only displayed text. Full values, editing, field-level
+    provenance and saved configuration remain unchanged.
+    """
+
+    wrap_lines: bool = False
+    """Wrap complete list items to panel width and grow rows; disable for horizontal scrolling."""
+
+    show_detail_line: bool = True
+    """Show the declared detail line, such as a plate's full input path."""
+
+    show_active_configs: bool = True
+    """Include enabled configurations and their declaration-owned always-viewable fields."""
+
+    show_modified_fields: bool = True
+    """Add fields differing from their signature defaults to the declared preview fields."""
 
     show_group_labels: bool = True
-    group_separator: str = " | "
-    field_separator: str = ", "
-    closing_brace_separator: str = ""
-    container_abbr_func: Callable[[type], str] = get_group_abbreviation
+    """Show configuration group headings using each owner's declared abbreviation."""
+
+    collection_detail: PreviewValueDetail = PreviewValueDetail.COMPACT
+    """Summarize collections by count or expand contents; enum sequences keep readable names."""
+
+    max_value_length: int = 96
+    """Maximum characters per value, with an ellipsis for longer values; zero shows all text."""
+
+    group_separator: str = field(default=" | ", metadata={"ui_hidden": True})
+    field_separator: str = field(default=", ", metadata={"ui_hidden": True})
+    closing_brace_separator: str = field(default="", metadata={"ui_hidden": True})
+    container_abbr_func: Callable[[type], str] = field(
+        default=get_group_abbreviation, metadata={"ui_hidden": True}
+    )
+
+    def __post_init__(self) -> None:
+        if self.max_value_length < 0:
+            raise ValueError("max_value_length must be non-negative")
+
+    def format_value(self, value: object) -> str | None:
+        text = format_preview_value(value, self.collection_detail)
+        if text is not None and self.max_value_length and len(text) > self.max_value_length:
+            return text[: self.max_value_length - 1] + "…"
+        return text
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +216,7 @@ class ObjectStatePreviewFormattingService:
                         field_path=field_path,
                         value=value,
                         field_owner=field_owner,
+                        value_formatter=self.config.format_value,
                     )
                 )
             else:
