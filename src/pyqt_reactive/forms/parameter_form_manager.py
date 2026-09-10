@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
 from pyqt_reactive.animation import FlashMixin
 from pyqt_reactive.animation.flash_trace import flash_trace
+from pyqt_reactive.core.deferred_callback import DeferredCallback
 
 if TYPE_CHECKING:
     from objectstate import ObjectState
@@ -623,16 +624,7 @@ class ParameterFormManager(
         manager lets Qt cancel that work during destruction before the callback
         can enter stale child widgets or flash factories.
         """
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-
-        def run_callback() -> None:
-            timer.deleteLater()
-            callback()
-
-        timer.timeout.connect(run_callback)
-        timer.start(delay_ms)
-        return timer
+        return DeferredCallback(self, delay_ms, callback)
 
     def setup_ui(self):
         """Set up the UI layout."""

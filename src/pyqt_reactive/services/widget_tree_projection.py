@@ -12,10 +12,10 @@ from metaclass_registry import AutoRegisterMeta
 from PyQt6.QtCore import (
     QAbstractItemModel,
     QModelIndex,
+    QPersistentModelIndex,
     QPoint,
     QRect,
     Qt,
-    QTimer,
     QItemSelectionModel,
 )
 from PyQt6.QtWidgets import (
@@ -45,6 +45,7 @@ from pyqt_reactive.services.widget_tree_projection_config import (
 )
 from pyqt_reactive.widgets.shared.styled_text_layout import StyledText, StyledTextLayout
 from pyqt_reactive.widgets.shared.list_item_delegate import PreviewWrapMode
+from pyqt_reactive.core.deferred_callback import DeferredCallback
 
 TextMethodWidget: TypeAlias = QLineEdit | QAbstractSpinBox
 PlainTextMethodWidget: TypeAlias = QTextEdit | QPlainTextEdit
@@ -63,6 +64,21 @@ class ItemActionABC(ABC):
     """Nominal owner of a projected model-row action."""
 
     default: ClassVar[bool] = False
+
+    def defer(self, view: QAbstractItemView, index: QModelIndex) -> None:
+        """Queue this action for the same surviving row in its owning view."""
+        DeferredCallback(
+            view,
+            0,
+            partial(self._invoke_if_current, view, QPersistentModelIndex(index)),
+        )
+
+    def _invoke_if_current(
+        self, view: QAbstractItemView, persistent: QPersistentModelIndex
+    ) -> None:
+        index = QModelIndex(persistent)
+        if index.isValid() and index.model() is view.model() and self.available(view, index):
+            self.invoke(view, index)
 
     @abstractmethod
     def available(self, view: QAbstractItemView, index: QModelIndex) -> bool: ...
@@ -402,7 +418,7 @@ class QAbstractButtonDescriptorProjector(WidgetDescriptorProjector):
                 action_kind,
                 target_index=None,
             )
-        QTimer.singleShot(0, button.click)
+        DeferredCallback(button, 0, button.click)
 
     def project(
         self,
@@ -543,7 +559,8 @@ class IndexedSelectionWidgetDescriptorProjector(WidgetDescriptorProjector):
         item_count = selection_widget.count()
         if target_index is None or target_index not in range(item_count):
             raise WidgetActionTargetInvalidError(target_index, item_count)
-        QTimer.singleShot(
+        DeferredCallback(
+            selection_widget,
             0,
             partial(selection_widget.setCurrentIndex, target_index),
         )
@@ -637,7 +654,8 @@ class QGroupBoxDescriptorProjector(WidgetDescriptorProjector):
                 action_kind,
                 target_index=None,
             )
-        QTimer.singleShot(
+        DeferredCallback(
+            group_box,
             0,
             partial(group_box.setChecked, not group_box.isChecked()),
         )
