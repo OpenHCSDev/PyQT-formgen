@@ -287,12 +287,17 @@ def test_mixed_rows_resize_scroll_and_keep_wrapped_text_reachable(qtbot, preview
 
 
 @pytest.mark.parametrize("focused", [False, True])
+@pytest.mark.parametrize("scoped", [False, True])
 def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
-    qtbot, preview_list, focused, monkeypatch
+    qtbot, preview_list, focused, scoped, monkeypatch
 ):
     from pathlib import Path
 
-    from pyqt_reactive.widgets.shared.list_item_delegate import OBJECT_STATE_PATH_ROLE
+    from pyqt_reactive.widgets.shared.list_item_delegate import (
+        OBJECT_STATE_PATH_ROLE,
+        SCOPE_SCHEME_ROLE,
+    )
+    from pyqt_reactive.widgets.shared.scope_color_utils import build_color_scheme_from_rgb
 
     class ActiveRowFlash:
         def get_flash_color_for_object_state_path(self, scope):
@@ -312,6 +317,11 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
     wrapped.setData(PREVIEW_WRAP_ROLE, PreviewWrapMode.WRAPPED)
     wrapped.setData(LEADING_MARKER_ROLE, ListItemLeadingMarker())
     wrapped.setData(OBJECT_STATE_PATH_ROLE, "wrapped-row")
+    if scoped:
+        wrapped.setData(
+            SCOPE_SCHEME_ROLE,
+            build_color_scheme_from_rgb((230, 45, 65), "plate::step_3"),
+        )
     view.itemDelegate()._manager = ActiveRowFlash()
     view.doItemsLayout()
     view.clearSelection()
@@ -333,7 +343,7 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
     native_frames.clear()
     view.horizontalScrollBar().setValue(view.horizontalScrollBar().maximum())
     after = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
-    evidence = Path("test-artifacts/wrapped-row-scroll") / str(focused)
+    evidence = Path("test-artifacts/wrapped-row-scroll") / str(scoped) / str(focused)
     evidence.mkdir(parents=True, exist_ok=True)
     before.save(str(evidence / "before.png"))
     after.save(str(evidence / "after.png"))
@@ -378,11 +388,9 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
         frame for frame in native_frames if frame[0][1] == 0
     }
     assert before == after
-    assert any(
-        after.pixelColor(x, y).red() > 150 and after.pixelColor(x, y).green() < 100
-        for x in range(0, after.width(), 10)
-        for y in range(0, after.height(), 10)
-    )
+    view.itemDelegate()._manager = None
+    unflashed = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
+    assert after != unflashed
 
 
 def test_each_visual_preview_line_has_graphical_guide_and_hanging_gutter(qapp):

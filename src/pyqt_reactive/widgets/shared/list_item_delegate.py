@@ -260,7 +260,7 @@ class MultilinePreviewItemDelegate(QStyledItemDelegate):
             painter.restore()
 
         if scheme is not None:
-            self._paint_border_layers(painter, option.rect, scheme)
+            self._paint_border_layers(painter, opt.rect, scheme)
 
     def _paint_leading_marker(
         self,
