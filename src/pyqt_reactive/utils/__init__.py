@@ -12,10 +12,6 @@ from .preview_formatters import (
     resolve_field_abbreviation,
     resolve_preview_label,
 )
-from .scroll_filter import (
-    ShiftWheelHorizontalScrollFilter,
-    install_shift_wheel_scrolling,
-)
 
 __all__ = [
     "canonical_declaration_mro",
@@ -26,6 +22,4 @@ __all__ = [
     "PreviewLabelResolution",
     "resolve_field_abbreviation",
     "resolve_preview_label",
-    "ShiftWheelHorizontalScrollFilter",
-    "install_shift_wheel_scrolling",
 ]
