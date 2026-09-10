@@ -54,6 +54,11 @@ Large forms may create widgets progressively. Expensive placeholder or help
 resolution can run outside the GUI thread, but applying widget changes must
 return to the Qt thread. Debouncing coalesces rapid state notifications.
 
+``schedule_lifecycle_callback()`` delegates to ``DeferredCallback`` in
+``pyqt_reactive.core.deferred_callback``. Its single-shot timer is a child of
+the target QObject, so destruction cancels pending work and successful delivery
+retires the timer. Generic widget actions use this same lifetime mechanism.
+
 Teardown
 --------
 

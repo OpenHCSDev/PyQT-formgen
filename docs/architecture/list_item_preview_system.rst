@@ -51,6 +51,26 @@ fields:
 There is no ``show_config_indicators`` field.  Domain-specific indicators are
 ordinary segments supplied by the owning manager or formatting service.
 
+Preview policy and row controls
+-------------------------------
+
+``FormattingConfig`` in ``pyqt_reactive.strategies.preview_formatting`` owns
+shared display preferences, including detail visibility, collection formatting
+and the default wrapping policy. Pass that declaration to the manager's
+``set_preview_config()`` method to update formatting and layout together.
+
+The arrow beside a row switches its preview between wrapping to the viewport
+and horizontal scrolling. ``PreviewWrapMode`` stores an explicit choice on the
+item model; rows without an override follow the view's current default.
+Manager refreshes reuse surviving items, preserving those choices. Wrapped
+settings lines repeat the graphical branch guide on every visual continuation.
+Measurement, text, disclosure, flash and scope borders share the same row frame.
+
+Native clicks and projected widget actions use the same item-action declarations.
+Deferred actions belong to the target view and retain row identity through Qt's
+persistent model index. Removing the row, replacing its model or destroying the
+view cancels the pending action; reordering preserves the original target.
+
 Rendering flow
 --------------
 
@@ -89,6 +109,11 @@ field values, their declaring types, and lazy metadata.  Domain config
 declarations own preview labels and abbreviations.  The host manager owns which
 semantic fields to show, status prefixes, and explicit value-projection
 callables.  Concrete domain names do not belong in the generic builder.
+
+The host also owns the view's lifetime: parent it under an owned QWidget, or
+retain the top-level view until it is closed and its deferred deletion is
+delivered. Queued callbacks and native event processing borrow that view; the
+application or test fixture keeps its owner alive through those operations.
 
 See also :doc:`abstract_manager_widget` and
 :doc:`gui_performance_patterns`.
