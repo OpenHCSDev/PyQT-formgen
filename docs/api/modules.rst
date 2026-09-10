@@ -4,6 +4,15 @@ API orientation
 pyqt-reactive keeps package ``__init__`` modules intentionally lightweight.
 Import concrete APIs from their owning modules.
 
+Background completion
+---------------------
+
+``pyqt_reactive.core.future_completion``
+   ``FutureCompletion`` connects a ``concurrent.futures.Future`` to a Qt slot.
+   The future owns the relay; a receiving QObject uses a ``pyqtSlot`` method so
+   Qt disconnects it on destruction. Closing one receiver does not cancel a
+   shared operation or leave a callback pointing to its deleted signal.
+
 Forms
 -----
 
