@@ -274,7 +274,7 @@ def test_mixed_rows_resize_scroll_and_keep_wrapped_text_reachable(qtbot, preview
     assert rect.left() >= 0
     assert (
         view.itemDelegate()
-        ._text_rect(row_option(view, wrapped), view.indexFromItem(wrapped))
+        ._row_rect(row_option(view, wrapped), view.indexFromItem(wrapped))
         .width()
         == view.viewport().width()
     )
@@ -286,7 +286,12 @@ def test_mixed_rows_resize_scroll_and_keep_wrapped_text_reachable(qtbot, preview
     qtbot.waitUntil(lambda: view.visualItemRect(wrapped).height() < old_height)
 
 
-def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(qtbot, preview_list):
+@pytest.mark.parametrize("focused", [False, True])
+def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
+    qtbot, preview_list, focused, monkeypatch
+):
+    from pathlib import Path
+
     from pyqt_reactive.widgets.shared.list_item_delegate import OBJECT_STATE_PATH_ROLE
 
     class ActiveRowFlash:
@@ -294,6 +299,15 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(qtb
             return QColor(230, 45, 65, 200)
 
     view = preview_list
+    native_frames = []
+    style = view.style()
+    native_draw = style.drawControl
+
+    def record_native_frame(element, option, painter, widget):
+        native_frames.append((option.rect.getRect(), option.state.value))
+        return native_draw(element, option, painter, widget)
+
+    monkeypatch.setattr(style, "drawControl", record_native_frame)
     wrapped, _horizontal = add_row(view), add_row(view)
     wrapped.setData(PREVIEW_WRAP_ROLE, PreviewWrapMode.WRAPPED)
     wrapped.setData(LEADING_MARKER_ROLE, ListItemLeadingMarker())
@@ -301,10 +315,68 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(qtb
     view.itemDelegate()._manager = ActiveRowFlash()
     view.doItemsLayout()
     view.clearSelection()
+    view.activateWindow()
+    qtbot.waitUntil(view.isActiveWindow)
+    if focused:
+        view.setFocus()
+        qtbot.waitUntil(view.hasFocus)
+    else:
+        view.clearFocus()
+    # Native Windows recomputes hovered rows on scroll. Keep the pointer on the
+    # scrollbar so this test compares the same interaction state on both sides.
+    scrollbar = view.horizontalScrollBar()
+    qtbot.mouseMove(scrollbar, pos=scrollbar.rect().center())
     capture_height = min(view.visualItemRect(wrapped).height(), view.viewport().height())
+    native_frames.clear()
     before = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
+    before_frames = tuple(native_frames)
+    native_frames.clear()
     view.horizontalScrollBar().setValue(view.horizontalScrollBar().maximum())
     after = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
+    evidence = Path("test-artifacts/wrapped-row-scroll") / str(focused)
+    evidence.mkdir(parents=True, exist_ok=True)
+    before.save(str(evidence / "before.png"))
+    after.save(str(evidence / "after.png"))
+    if before != after:
+        view.viewport().repaint()
+        repainted = (
+            view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
+        )
+        repainted.save(str(evidence / "repainted.png"))
+        differences = [
+            (x, y)
+            for x in range(min(before.width(), after.width()))
+            for y in range(min(before.height(), after.height()))
+            if before.pixel(x, y) != after.pixel(x, y)
+        ]
+        print(
+            "scroll pixel diagnostics",
+            {
+                "style": view.style().objectName(),
+                "before_size": (before.width(), before.height()),
+                "after_size": (after.width(), after.height()),
+                "device_pixel_ratio": before.devicePixelRatio(),
+                "different_pixels": len(differences),
+                "difference_bounds": (
+                    (
+                        min(x for x, y in differences),
+                        min(y for x, y in differences),
+                        max(x for x, y in differences),
+                        max(y for x, y in differences),
+                    )
+                    if differences
+                    else None
+                ),
+                "explicit_repaint_restores_equality": before == repainted,
+                "focus": view.hasFocus(),
+                "before_native_frames": before_frames,
+                "after_native_frames": native_frames,
+                "row_rect": view.visualItemRect(wrapped).getRect(),
+            },
+        )
+    assert {frame for frame in before_frames if frame[0][1] == 0} == {
+        frame for frame in native_frames if frame[0][1] == 0
+    }
     assert before == after
     assert any(
         after.pixelColor(x, y).red() > 150 and after.pixelColor(x, y).green() < 100
