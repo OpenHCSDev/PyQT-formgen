@@ -326,8 +326,8 @@ def test_wrapped_text_disclosure_marker_and_flash_stay_aligned_when_scrolled(
     # scrollbar so this test compares the same interaction state on both sides.
     scrollbar = view.horizontalScrollBar()
     qtbot.mouseMove(scrollbar, pos=scrollbar.rect().center())
-    qtbot.waitUntil(lambda: not view.viewport().underMouse())
     capture_height = min(view.visualItemRect(wrapped).height(), view.viewport().height())
+    native_frames.clear()
     before = view.viewport().grab().toImage().copy(0, 0, view.viewport().width(), capture_height)
     before_frames = tuple(native_frames)
     native_frames.clear()
